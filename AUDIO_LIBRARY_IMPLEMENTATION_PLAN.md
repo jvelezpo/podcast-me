@@ -4,52 +4,68 @@ This plan targets the current Expo SDK 57 mobile app on Android and iOS. "Phone 
 
 ## 1. Define the behavior and acceptance criteria
 
-- [ ] Confirm that a user can open the native file picker, select one or more audio files, cancel without changing the library, and see every successfully imported file in the Home screen list.
-- [ ] Confirm that imported audio remains available after the app restarts by copying it into the app's persistent document directory instead of retaining a temporary picker/cache URI.
-- [ ] Define a completed track as one that reaches the end or has less than three seconds remaining; its next Play action should start at `0` instead of resuming at the end.
-- [ ] Define resume accuracy as exact after pause, seeking, track changes, and normal app backgrounding, and within the periodic checkpoint interval after an abrupt force-quit.
-- [ ] Keep playback, library metadata, and files entirely on the device for this version; do not add accounts, uploads, or cloud synchronization.
+- [x] File selection and cancellation behavior is defined: the native picker opens only from the user-visible "Add audio" action and allows one or more audio files to be selected. Canceling is a no-op: it adds, removes, and updates nothing. After a non-canceled selection, every file that imports successfully appears exactly once in the Home screen list; one failed file does not hide successful files from the same selection.
+- [x] Restart persistence is defined: each successful import is copied from its picker/cache URI into the app's persistent document directory, and library metadata stores the copied URI. After a full process termination and relaunch, the item remains listed and playable without selecting the source file again.
+- [x] Completed-track behavior is defined: a track is complete when the player reports that it finished, or when its known duration minus its saved position is strictly less than three seconds. Completion stores position `0`; the next Play action seeks to `0` before playback rather than resuming near the final frame.
+- [x] Resume accuracy is defined: pause, seek completion, track change, and a normal inactive/background transition save the latest finite player-reported position without rounding or an intentional rewind. Playback resumes from that saved value. During playback, durable checkpoints occur at the interval defined in section 8, so after an abrupt force-quit the recovered position may trail only by that interval.
+- [x] The version-one privacy boundary is defined: imported bytes, library metadata, and playback state remain in app-owned on-device storage. The app has no account, upload, analytics transfer of library data, or cloud-sync path. A document provider may download a file the user explicitly selects, but the app retains only its private local copy and does not synchronize it back to that provider.
+
+### Acceptance scenarios
+
+| ID | Given | When | Then |
+| --- | --- | --- | --- |
+| AL-01 | The Home screen is open | The user presses "Add audio" | The operating system's document picker opens and permits multiple audio selections. |
+| AL-02 | The library already contains any number of items | The user cancels the picker | The visible list is unchanged and the serialized library value is byte-for-byte unchanged. |
+| AL-03 | A picker result contains one or more importable audio files | Import finishes | Every successfully imported file appears once in the Home screen list, including files sharing the same display name. |
+| AL-04 | A picker result contains both importable and failed files | Import finishes | Successful files appear in the list, failed files do not, and the failures do not roll back successful imports. |
+| AL-05 | At least one file was imported successfully | The app process is terminated and relaunched | The item is still listed and plays from its app-owned persistent URI without picker access. |
+| AL-06 | A track finishes or its remaining time is `< 3` seconds | The user presses Play again | Playback starts from `0`, and the persisted position is `0`. |
+| AL-07 | Playback is paused, a seek completes, the active track changes, or the app normally becomes inactive/backgrounded | The library is persisted and playback later resumes | The saved position equals the latest valid player-reported position for that track, with no app-added rounding or rewind. |
+| AL-08 | A track is playing and periodic checkpoints are enabled | The app is force-quit and relaunched | The recovered position is no more than one checkpoint interval behind the last position available before termination. |
+| AL-09 | Audio has been imported and played | App-owned storage and configured integrations are inspected | Audio bytes, metadata, and progress exist only on device; no account, upload, or cloud-synchronization mechanism exists. |
+
+These scenarios define the target behavior. Runtime verification is intentionally tracked in section 10 and is not implied by completing this definition step.
 
 ## 2. Install SDK-compatible dependencies
 
-- [ ] Run `npx expo install expo-audio expo-document-picker expo-file-system @react-native-async-storage/async-storage` so Expo selects versions compatible with the project's SDK 57 release.
-- [ ] Run `npx expo install --check` and resolve only dependency-version issues introduced by the new packages.
-- [ ] Configure the `expo-audio` plugin with `microphonePermission: false`, `recordAudioAndroid: false`, `enableBackgroundRecording: false`, and `enableBackgroundPlayback: false`; do not add the `expo-document-picker` iCloud-container configuration unless the app later needs its own iCloud container.
+- [x] Run `npx expo install expo-audio expo-document-picker expo-file-system @react-native-async-storage/async-storage` so Expo selects versions compatible with the project's SDK 57 release.
+- [x] Run `npx expo install --check` and resolve only dependency-version issues introduced by the new packages.
+- [x] Configure the `expo-audio` plugin with `microphonePermission: false`, `recordAudioAndroid: false`, `enableBackgroundRecording: false`, and `enableBackgroundPlayback: false`; do not add the `expo-document-picker` iCloud-container configuration unless the app later needs its own iCloud container.
 
 ## 3. Define the local audio data model
 
-- [ ] Add an `AudioItem` type containing `id`, `originalName`, `localUri`, `mimeType`, `sizeBytes`, `durationSeconds`, `lastPositionSeconds`, `addedAt`, and `updatedAt`.
-- [ ] Store playback times in seconds because Expo Audio's `currentTime`, `duration`, and `seekTo()` APIs use seconds.
-- [ ] Generate a stable unique `id` and a collision-safe internal filename for every import so two recordings with the same display name cannot overwrite one another.
-- [ ] Use a versioned AsyncStorage key such as `podcast-me.audio-library.v1` so the stored data can be migrated later without colliding with unrelated app settings.
+- [x] Add an `AudioItem` type containing `id`, `originalName`, `localUri`, `mimeType`, `sizeBytes`, `durationSeconds`, `lastPositionSeconds`, `addedAt`, and `updatedAt`.
+- [x] Store playback times in seconds because Expo Audio's `currentTime`, `duration`, and `seekTo()` APIs use seconds.
+- [x] Generate a stable unique `id` and a collision-safe internal filename for every import so two recordings with the same display name cannot overwrite one another.
+- [x] Use a versioned AsyncStorage key such as `podcast-me.audio-library.v1` so the stored data can be migrated later without colliding with unrelated app settings.
 
 ## 4. Build the persistence layer
 
-- [ ] Create a small storage module, for example `src/services/audio-library-storage.ts`, that owns loading and saving the `AudioItem[]` JSON value in AsyncStorage.
-- [ ] Make the loader return an empty list when no library exists and surface malformed-data errors without crashing the Home screen.
-- [ ] Validate each loaded `localUri` with `expo-file-system`; mark missing files unavailable in the UI rather than attempting to play a broken URI.
-- [ ] Serialize library writes through one save path so a progress update cannot overwrite a newly imported item with stale state.
-- [ ] Keep the in-memory library as the UI's immediate source of truth and persist mutations after updating that state.
+- [x] Create a small storage module, for example `src/services/audio-library-storage.ts`, that owns loading and saving the `AudioItem[]` JSON value in AsyncStorage.
+- [x] Make the loader return an empty list when no library exists and surface malformed-data errors without crashing the Home screen.
+- [x] Validate each loaded `localUri` with `expo-file-system`; mark missing files unavailable in the UI rather than attempting to play a broken URI.
+- [x] Serialize library writes through one save path so a progress update cannot overwrite a newly imported item with stale state.
+- [x] Keep the in-memory library as the UI's immediate source of truth and persist mutations after updating that state.
 
 ## 5. Import audio from phone storage
 
-- [ ] Add an "Add audio" action to the Home screen and call `DocumentPicker.getDocumentAsync({ type: 'audio/*', multiple: true, copyToCacheDirectory: true })` only from that user action.
-- [ ] Return immediately when the picker result has `canceled: true` and leave the current library unchanged.
-- [ ] Create an app-owned `audio-library` directory under `Paths.document` on first import; use idempotent directory creation so later imports do not fail.
-- [ ] For each selected asset, create a `File` from its picker URI and copy it to a uniquely named `File` inside the persistent `audio-library` directory.
-- [ ] Preserve the picker asset's original filename for display while saving only the new persistent URI for playback.
-- [ ] Reject assets with an explicitly non-audio MIME type or files that cannot be copied, continue importing the remaining valid assets, and show one concise result message listing failures.
-- [ ] Allow a user to re-import the same source as a separate library item; unique internal IDs and filenames must prevent the copies from overwriting one another.
-- [ ] If file copying succeeds but the metadata save fails, delete only the new orphaned copy so the app does not accumulate invisible files.
+- [x] Add an "Add audio" action to the Home screen and call `DocumentPicker.getDocumentAsync({ type: 'audio/*', multiple: true, copyToCacheDirectory: true })` only from that user action.
+- [x] Return immediately when the picker result has `canceled: true` and leave the current library unchanged.
+- [x] Create an app-owned `audio-library` directory under `Paths.document` on first import; use idempotent directory creation so later imports do not fail.
+- [x] For each selected asset, create a `File` from its picker URI and copy it to a uniquely named `File` inside the persistent `audio-library` directory.
+- [x] Preserve the picker asset's original filename for display while saving only the new persistent URI for playback.
+- [x] Reject assets with an explicitly non-audio MIME type or files that cannot be copied, continue importing the remaining valid assets, and show one concise result message listing failures.
+- [x] Allow a user to re-import the same source as a separate library item; unique internal IDs and filenames must prevent the copies from overwriting one another.
+- [x] If file copying succeeds but the metadata save fails, delete only the new orphaned copy so the app does not accumulate invisible files.
 
 ## 6. Render the audio library
 
-- [ ] Replace the placeholder content inside `src/app/index.tsx` with an audio-library screen while preserving the existing Expo Router route and shared theme components where useful.
-- [ ] Show a clear empty state with the "Add audio" action when the persisted library has no items.
-- [ ] Render each audio row with its original name, total duration when known, saved position, and a Play/Pause control.
-- [ ] Visually identify the active item and display its current position and progress without writing to storage on every render.
-- [ ] Disable playback for missing or unsupported files and show an actionable message that the user can re-import the recording.
-- [ ] Show loading, picker-open, importing, and playback-error states so repeated taps cannot start overlapping imports or player transitions.
+- [x] Replace the placeholder content inside `src/app/index.tsx` with an audio-library screen while preserving the existing Expo Router route and shared theme components where useful.
+- [x] Show a clear empty state with the "Add audio" action when the persisted library has no items.
+- [x] Render each audio row with its original name, total duration when known, saved position, and a Play/Pause control.
+- [x] Visually identify the active item and display its current position and progress without writing to storage on every render.
+- [x] Disable playback for missing or unsupported files and show an actionable message that the user can re-import the recording.
+- [x] Show loading, picker-open, importing, and playback-error states so repeated taps cannot start overlapping imports or player transitions.
 
 ## 7. Implement one shared playback controller
 
