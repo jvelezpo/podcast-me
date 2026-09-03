@@ -1,0 +1,103 @@
+# Local Audio Library Implementation Plan
+
+This plan targets the current Expo SDK 57 mobile app on Android and iOS. "Phone storage" means files that the user explicitly selects through the operating system's document picker; the app should not request broad storage access or silently scan the device. Web support is outside this feature's initial scope.
+
+## 1. Define the behavior and acceptance criteria
+
+- [ ] Confirm that a user can open the native file picker, select one or more audio files, cancel without changing the library, and see every successfully imported file in the Home screen list.
+- [ ] Confirm that imported audio remains available after the app restarts by copying it into the app's persistent document directory instead of retaining a temporary picker/cache URI.
+- [ ] Define a completed track as one that reaches the end or has less than three seconds remaining; its next Play action should start at `0` instead of resuming at the end.
+- [ ] Define resume accuracy as exact after pause, seeking, track changes, and normal app backgrounding, and within the periodic checkpoint interval after an abrupt force-quit.
+- [ ] Keep playback, library metadata, and files entirely on the device for this version; do not add accounts, uploads, or cloud synchronization.
+
+## 2. Install SDK-compatible dependencies
+
+- [ ] Run `npx expo install expo-audio expo-document-picker expo-file-system @react-native-async-storage/async-storage` so Expo selects versions compatible with the project's SDK 57 release.
+- [ ] Run `npx expo install --check` and resolve only dependency-version issues introduced by the new packages.
+- [ ] Configure the `expo-audio` plugin with `microphonePermission: false`, `recordAudioAndroid: false`, `enableBackgroundRecording: false`, and `enableBackgroundPlayback: false`; do not add the `expo-document-picker` iCloud-container configuration unless the app later needs its own iCloud container.
+
+## 3. Define the local audio data model
+
+- [ ] Add an `AudioItem` type containing `id`, `originalName`, `localUri`, `mimeType`, `sizeBytes`, `durationSeconds`, `lastPositionSeconds`, `addedAt`, and `updatedAt`.
+- [ ] Store playback times in seconds because Expo Audio's `currentTime`, `duration`, and `seekTo()` APIs use seconds.
+- [ ] Generate a stable unique `id` and a collision-safe internal filename for every import so two recordings with the same display name cannot overwrite one another.
+- [ ] Use a versioned AsyncStorage key such as `podcast-me.audio-library.v1` so the stored data can be migrated later without colliding with unrelated app settings.
+
+## 4. Build the persistence layer
+
+- [ ] Create a small storage module, for example `src/services/audio-library-storage.ts`, that owns loading and saving the `AudioItem[]` JSON value in AsyncStorage.
+- [ ] Make the loader return an empty list when no library exists and surface malformed-data errors without crashing the Home screen.
+- [ ] Validate each loaded `localUri` with `expo-file-system`; mark missing files unavailable in the UI rather than attempting to play a broken URI.
+- [ ] Serialize library writes through one save path so a progress update cannot overwrite a newly imported item with stale state.
+- [ ] Keep the in-memory library as the UI's immediate source of truth and persist mutations after updating that state.
+
+## 5. Import audio from phone storage
+
+- [ ] Add an "Add audio" action to the Home screen and call `DocumentPicker.getDocumentAsync({ type: 'audio/*', multiple: true, copyToCacheDirectory: true })` only from that user action.
+- [ ] Return immediately when the picker result has `canceled: true` and leave the current library unchanged.
+- [ ] Create an app-owned `audio-library` directory under `Paths.document` on first import; use idempotent directory creation so later imports do not fail.
+- [ ] For each selected asset, create a `File` from its picker URI and copy it to a uniquely named `File` inside the persistent `audio-library` directory.
+- [ ] Preserve the picker asset's original filename for display while saving only the new persistent URI for playback.
+- [ ] Reject assets with an explicitly non-audio MIME type or files that cannot be copied, continue importing the remaining valid assets, and show one concise result message listing failures.
+- [ ] Allow a user to re-import the same source as a separate library item; unique internal IDs and filenames must prevent the copies from overwriting one another.
+- [ ] If file copying succeeds but the metadata save fails, delete only the new orphaned copy so the app does not accumulate invisible files.
+
+## 6. Render the audio library
+
+- [ ] Replace the placeholder content inside `src/app/index.tsx` with an audio-library screen while preserving the existing Expo Router route and shared theme components where useful.
+- [ ] Show a clear empty state with the "Add audio" action when the persisted library has no items.
+- [ ] Render each audio row with its original name, total duration when known, saved position, and a Play/Pause control.
+- [ ] Visually identify the active item and display its current position and progress without writing to storage on every render.
+- [ ] Disable playback for missing or unsupported files and show an actionable message that the user can re-import the recording.
+- [ ] Show loading, picker-open, importing, and playback-error states so repeated taps cannot start overlapping imports or player transitions.
+
+## 7. Implement one shared playback controller
+
+- [ ] Create one `expo-audio` player for the Home screen with `useAudioPlayer` and read reactive state with `useAudioPlayerStatus`; do not create one native player per list row.
+- [ ] Configure a reasonable status update interval, such as 500 ms, for responsive progress display without unnecessary update frequency.
+- [ ] When Play is pressed for a different item, pause the current item, persist its latest position, replace the player's source with the new `localUri`, and wait until the new source reports `isLoaded`.
+- [ ] Clamp the saved position to the loaded duration, call `seekTo(savedPosition)`, and call `play()` only after seeking completes so playback never audibly starts from zero first.
+- [ ] When Play is pressed for the active paused item, seek to its saved position if needed and resume it; when Pause is pressed, pause first and immediately persist the reported `currentTime`.
+- [ ] Guard source loading with the selected item ID so rapid taps on different rows cannot cause an older load callback to start the wrong recording.
+- [ ] Update the active item's duration from the loaded audio status and persist it when the duration first becomes available or changes.
+- [ ] When `didJustFinish` is true, persist `lastPositionSeconds: 0`, stop showing the item as active playback, and make its next Play action start at the beginning.
+- [ ] Display playback errors from the audio status, preserve the last valid checkpoint, and allow the user to retry.
+
+## 8. Persist resume progress safely
+
+- [ ] Update the active item's position in memory from player status while it is playing.
+- [ ] Throttle durable AsyncStorage checkpoints to approximately once every five seconds during playback instead of writing on every 500 ms status event.
+- [ ] Force an immediate checkpoint on Pause, seek completion, track change, app transition to inactive/background, and playback-controller cleanup.
+- [ ] Flush the previous item's checkpoint before replacing the audio source so switching tracks cannot assign one recording's time to another.
+- [ ] Ignore non-finite or negative times and never persist a position greater than the known duration.
+- [ ] Load the library before enabling Play controls so the first playback action always has access to the saved resume position.
+
+## 9. Route playback to appropriate Bluetooth devices
+
+- [ ] Configure playback as media audio with `allowsRecording: false` and `shouldRouteThroughEarpiece: false`, then allow Android and iOS to send sound to the operating system's currently active media-output route.
+- [ ] Treat Bluetooth earbuds, headphones, speakers, car stereos, CarPlay systems, and equivalent devices as valid only when the operating system exposes them as the active media-audio output, such as an A2DP or LE Audio output.
+- [ ] Do not enumerate all paired Bluetooth devices or request Bluetooth permissions merely to decide where sound should play; a connected peripheral is not necessarily an audio-output device.
+- [ ] Keep playback on the phone or another active media output when a watch is connected only for notifications, controls, health data, or other non-audio services.
+- [ ] Do not identify watches by device name, manufacturer text, or a hard-coded denylist because names can change and the same Bluetooth audio profiles are used by legitimate speakers and headsets.
+- [ ] Document the platform boundary: if a watch deliberately advertises itself as a media-audio output and the user or operating system selects it, Expo Audio cannot reliably distinguish it from another Bluetooth speaker; an absolute device-specific block would require a separately scoped native investigation and may also block legitimate devices.
+- [ ] When a Bluetooth audio device disconnects, keep the last playback checkpoint and do not automatically restart through the phone speaker; require the user to press Play again to avoid unexpected loud audio.
+- [ ] Test Bluetooth routing with representative earbuds, a speaker, and a car: connect each device, make it the system's active media output, press Play, and confirm that no sound comes from the phone speaker.
+- [ ] Test with a watch connected by itself and with a valid Bluetooth audio output connected at the same time; confirm that the watch is ignored unless the operating system explicitly exposes it as the selected media output.
+- [ ] Test connecting, switching, and disconnecting Bluetooth outputs during playback and confirm that playback state and saved resume time remain correct.
+
+## 10. Verify behavior and prevent regressions
+
+- [ ] Add unit tests for empty and malformed storage values, library save/load round trips, repeated imports, time clamping, completed-track reset, and serialized writes.
+- [ ] Add controller tests with a mocked Expo Audio player for resume-before-play ordering, pause checkpoints, track switching, rapid selection changes, and `didJustFinish` reset.
+- [ ] Run `npx tsc --noEmit` and `npm run lint`, then fix only issues caused by this feature.
+- [ ] Test on a physical Android device with recordings from at least two storage providers and verify that selected `content://` assets still play after a full app restart because the app uses its copied persistent URI.
+- [ ] Test on a physical iOS device with local Files and iCloud Drive selections and verify that importing, restarting, and resuming work without microphone permission.
+- [ ] Play a recording for at least 30 seconds, pause, restart the app, press Play, and verify that playback resumes at the saved position.
+- [ ] Repeat the resume test after switching to another recording, backgrounding the app, and force-quitting; verify force-quit recovery is no more than one checkpoint interval behind.
+- [ ] Let a recording finish and verify that its next Play action starts at `0` rather than at the final frame.
+- [ ] Test canceling the picker, selecting an unsupported/corrupt audio file, importing files with identical names, and rapidly tapping different Play controls.
+- [ ] Confirm that only one recording can play at a time and that imported files and progress survive normal upgrades/reloads but are removed when the user clears app data or uninstalls the app.
+
+## Expo SDK 57 references
+
+The implementation should follow the versioned Expo documentation for [DocumentPicker](https://docs.expo.dev/versions/v57.0.0/sdk/document-picker/), [FileSystem](https://docs.expo.dev/versions/v57.0.0/sdk/filesystem/), [Audio](https://docs.expo.dev/versions/v57.0.0/sdk/audio/), and [AsyncStorage](https://docs.expo.dev/versions/v57.0.0/sdk/async-storage/).
