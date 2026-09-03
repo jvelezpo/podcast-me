@@ -12,6 +12,7 @@ type AudioLibraryRowProps = {
   isActive: boolean;
   isPlaying: boolean;
   isTransitioning: boolean;
+  isPlaybackReady: boolean;
   currentPositionSeconds: number;
   loadedDurationSeconds: number | null;
   playbackError: AudioPlaybackError | null;
@@ -23,6 +24,7 @@ export function AudioLibraryRow({
   isActive,
   isPlaying,
   isTransitioning,
+  isPlaybackReady,
   currentPositionSeconds,
   loadedDurationSeconds,
   playbackError,
@@ -36,7 +38,7 @@ export function AudioLibraryRow({
   const progress = getProgress(positionSeconds, durationSeconds);
   const itemError = playbackError?.itemId === item.id ? playbackError.message : null;
   const isBusy = isActive && isTransitioning;
-  const isButtonDisabled = !item.isAvailable || isTransitioning;
+  const isButtonDisabled = !isPlaybackReady || !item.isAvailable || isTransitioning;
   const buttonLabel = isBusy
     ? 'Loading…'
     : itemError

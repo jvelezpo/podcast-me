@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+import type { AudioItem } from '@/models/audio-item';
 import {
   deleteImportedAudioFiles,
   pickAndCopyAudioFiles,
@@ -18,6 +19,10 @@ export type AudioLibraryNotice = {
 };
 
 export type AudioImportPhase = 'idle' | 'picking' | 'importing';
+
+export type AudioItemPlaybackUpdate = Partial<
+  Pick<AudioItem, 'durationSeconds' | 'lastPositionSeconds'>
+>;
 
 export function useAudioLibrary() {
   const [items, setItems] = useState<LoadedAudioItem[]>([]);
@@ -127,12 +132,60 @@ export function useAudioLibrary() {
     }
   }
 
+  const updateAudioItem = useCallback(
+    async (itemId: string, update: AudioItemPlaybackUpdate): Promise<boolean> => {
+      const currentItem = itemsRef.current.find((item) => item.id === itemId);
+
+      if (!currentItem) {
+        return false;
+      }
+
+      const hasDurationChange =
+        update.durationSeconds !== undefined &&
+        update.durationSeconds !== currentItem.durationSeconds;
+      const hasPositionChange =
+        update.lastPositionSeconds !== undefined &&
+        update.lastPositionSeconds !== currentItem.lastPositionSeconds;
+
+      if (!hasDurationChange && !hasPositionChange) {
+        return true;
+      }
+
+      const nextItems = itemsRef.current.map((item) =>
+        item.id === itemId
+          ? {
+              ...item,
+              ...update,
+              updatedAt: new Date().toISOString(),
+            }
+          : item
+      );
+
+      itemsRef.current = nextItems;
+      setItems(nextItems);
+
+      try {
+        await saveAudioLibrary(nextItems);
+        return true;
+      } catch {
+        setNotice({
+          kind: 'warning',
+          title: 'Playback progress not saved',
+          message: 'Playback can continue, but the latest position or duration could not be saved.',
+        });
+        return false;
+      }
+    },
+    []
+  );
+
   return {
     items,
     isLoading,
     importPhase,
     notice,
     addAudio,
+    updateAudioItem,
     dismissNotice: () => setNotice(null),
   };
 }

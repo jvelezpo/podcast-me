@@ -49,7 +49,7 @@ These scenarios define the target behavior. Runtime verification is intentionall
 
 ## 5. Import audio from phone storage
 
-- [x] Add an "Add audio" action to the Home screen and call `DocumentPicker.getDocumentAsync({ type: 'audio/*', multiple: true, copyToCacheDirectory: true })` only from that user action.
+- [x] Add an "Add audio" action to the Home screen and call `DocumentPicker.getDocumentAsync` with `type: 'audio/*'` and `multiple: true` only from that user action. Copy to the picker cache on iOS; on Android, retain the picker-granted `content://` URI long enough to copy directly into app storage so Expo Go's experience-scoped FileSystem does not reject its own global picker cache.
 - [x] Return immediately when the picker result has `canceled: true` and leave the current library unchanged.
 - [x] Create an app-owned `audio-library` directory under `Paths.document` on first import; use idempotent directory creation so later imports do not fail.
 - [x] For each selected asset, create a `File` from its picker URI and copy it to a uniquely named `File` inside the persistent `audio-library` directory.
@@ -69,24 +69,24 @@ These scenarios define the target behavior. Runtime verification is intentionall
 
 ## 7. Implement one shared playback controller
 
-- [ ] Create one `expo-audio` player for the Home screen with `useAudioPlayer` and read reactive state with `useAudioPlayerStatus`; do not create one native player per list row.
-- [ ] Configure a reasonable status update interval, such as 500 ms, for responsive progress display without unnecessary update frequency.
-- [ ] When Play is pressed for a different item, pause the current item, persist its latest position, replace the player's source with the new `localUri`, and wait until the new source reports `isLoaded`.
-- [ ] Clamp the saved position to the loaded duration, call `seekTo(savedPosition)`, and call `play()` only after seeking completes so playback never audibly starts from zero first.
-- [ ] When Play is pressed for the active paused item, seek to its saved position if needed and resume it; when Pause is pressed, pause first and immediately persist the reported `currentTime`.
-- [ ] Guard source loading with the selected item ID so rapid taps on different rows cannot cause an older load callback to start the wrong recording.
-- [ ] Update the active item's duration from the loaded audio status and persist it when the duration first becomes available or changes.
-- [ ] When `didJustFinish` is true, persist `lastPositionSeconds: 0`, stop showing the item as active playback, and make its next Play action start at the beginning.
-- [ ] Display playback errors from the audio status, preserve the last valid checkpoint, and allow the user to retry.
+- [x] Create one `expo-audio` player for the Home screen with `useAudioPlayer` and read reactive state with `useAudioPlayerStatus`; do not create one native player per list row.
+- [x] Configure a reasonable status update interval, such as 500 ms, for responsive progress display without unnecessary update frequency.
+- [x] When Play is pressed for a different item, pause the current item, persist its latest position, replace the player's source with the new `localUri`, and wait until the new source reports `isLoaded`.
+- [x] Clamp the saved position to the loaded duration, call `seekTo(savedPosition)`, and call `play()` only after seeking completes so playback never audibly starts from zero first.
+- [x] When Play is pressed for the active paused item, seek to its saved position if needed and resume it; when Pause is pressed, pause first and immediately persist the reported `currentTime`.
+- [x] Guard source loading with the selected item ID so rapid taps on different rows cannot cause an older load callback to start the wrong recording.
+- [x] Update the active item's duration from the loaded audio status and persist it when the duration first becomes available or changes.
+- [x] When `didJustFinish` is true, persist `lastPositionSeconds: 0`, stop showing the item as active playback, and make its next Play action start at the beginning.
+- [x] Display playback errors from the audio status, preserve the last valid checkpoint, and allow the user to retry.
 
 ## 8. Persist resume progress safely
 
-- [ ] Update the active item's position in memory from player status while it is playing.
-- [ ] Throttle durable AsyncStorage checkpoints to approximately once every five seconds during playback instead of writing on every 500 ms status event.
-- [ ] Force an immediate checkpoint on Pause, seek completion, track change, app transition to inactive/background, and playback-controller cleanup.
-- [ ] Flush the previous item's checkpoint before replacing the audio source so switching tracks cannot assign one recording's time to another.
-- [ ] Ignore non-finite or negative times and never persist a position greater than the known duration.
-- [ ] Load the library before enabling Play controls so the first playback action always has access to the saved resume position.
+- [x] Update the active item's position in memory from player status while it is playing.
+- [x] Throttle durable AsyncStorage checkpoints to approximately once every five seconds during playback instead of writing on every 500 ms status event.
+- [x] Force an immediate checkpoint on Pause, seek completion, track change, app transition to inactive/background, and playback-controller cleanup.
+- [x] Flush the previous item's checkpoint before replacing the audio source so switching tracks cannot assign one recording's time to another.
+- [x] Ignore non-finite or negative times and never persist a position greater than the known duration.
+- [x] Load the library before enabling Play controls so the first playback action always has access to the saved resume position.
 
 ## 9. Route playback to appropriate Bluetooth devices
 

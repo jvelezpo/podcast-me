@@ -1,5 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File, Paths } from 'expo-file-system';
+import { Platform } from 'react-native';
 
 import {
   createAudioItemId,
@@ -25,7 +26,9 @@ export async function pickAndCopyAudioFiles(
   const pickerResult = await DocumentPicker.getDocumentAsync({
     type: 'audio/*',
     multiple: true,
-    copyToCacheDirectory: true,
+    // Expo Go's Android cache is outside the experience-scoped FileSystem sandbox.
+    // Copy directly from the picker-granted content URI there; iOS still needs a cache copy.
+    copyToCacheDirectory: Platform.OS !== 'android',
   });
 
   if (pickerResult.canceled) {

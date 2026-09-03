@@ -11,7 +11,7 @@ import { useTheme } from '@/hooks/use-theme';
 
 export default function HomeScreen() {
   const library = useAudioLibrary();
-  const playback = useAudioLibraryPlayer();
+  const playback = useAudioLibraryPlayer(library.updateAudioItem, !library.isLoading);
   const theme = useTheme();
   const isImportBusy = library.importPhase !== 'idle';
 
@@ -115,6 +115,7 @@ export default function HomeScreen() {
                 isActive={isActive}
                 isPlaying={isActive && playback.isPlaying}
                 isTransitioning={playback.isTransitioning}
+                isPlaybackReady={playback.isReady}
                 currentPositionSeconds={playback.currentPositionSeconds}
                 loadedDurationSeconds={playback.durationSeconds}
                 playbackError={playback.playbackError}
