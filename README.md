@@ -23,6 +23,34 @@ In the output, you'll find options to open the app in a
 - [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
 - [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
 
+## Development app
+
+Podcast Me has a separate development-only app that can be installed alongside production:
+
+| Variant | App name | Android package / iOS bundle identifier |
+| --- | --- | --- |
+| Development | `Podcast Me Dev` | `com.podcastme.app.dev` |
+| Production | `Podcast Me` | `com.podcastme.app` |
+
+Build and install the development app locally, then start its development server:
+
+```bash
+npm run android:dev
+npm run start:dev
+```
+
+Use `npm run ios:dev` instead for iOS. These commands regenerate the ignored native project with the correct variant before compiling. The normal `npm run android` and `npm run ios` commands regenerate the production identity first.
+
+EAS development builds use internal distribution and are not store artifacts:
+
+```bash
+eas build --profile development --platform android
+eas build --profile development --platform ios
+eas build --profile development-simulator --platform ios
+```
+
+Only the `production` submit profile exists. Do not submit a development build by file path or reuse its `.dev` identifier for a store application.
+
 You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
 
 ## Get a fresh project

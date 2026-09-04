@@ -125,6 +125,15 @@ These scenarios define the target behavior. Runtime verification is intentionall
 - [ ] Test canceling the picker, selecting an unsupported/corrupt audio file, importing files with identical names, and rapidly tapping different Play controls.
 - [ ] Confirm that only one recording can play at a time and that imported files and progress survive normal upgrades/reloads but are removed when the user clears app data or uninstalls the app.
 
+## 11. Provide a development-only app variant
+
+- [x] Resolve production and development branding from `APP_VARIANT`, defaulting safely to production and rejecting unsupported values.
+- [x] Give the development app the distinct name `Podcast Me Dev`, URL scheme `podcastme-dev`, Android package `com.podcastme.app.dev`, and iOS bundle identifier `com.podcastme.app.dev` so it can coexist with production.
+- [x] Use development-only launcher and adaptive-icon assets with a violet background and visible `DEV` badge while leaving every production icon reference unchanged.
+- [x] Install the Expo SDK 57-compatible development client and enable its generated URL scheme only for the development variant.
+- [x] Add internal-distribution EAS profiles for development devices and the iOS Simulator. Expose only a `production` submit profile so the development app is not part of the store-submission workflow.
+- [x] Add local development scripts that cleanly regenerate ignored native projects with the development config before running, plus production scripts that regenerate production identifiers before release-oriented local runs.
+
 ## Expo SDK 57 references
 
 The implementation should follow the versioned Expo documentation for [DocumentPicker](https://docs.expo.dev/versions/v57.0.0/sdk/document-picker/), [FileSystem](https://docs.expo.dev/versions/v57.0.0/sdk/filesystem/), [Audio](https://docs.expo.dev/versions/v57.0.0/sdk/audio/), and [AsyncStorage](https://docs.expo.dev/versions/v57.0.0/sdk/async-storage/).
