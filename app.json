@@ -12,6 +12,7 @@
     },
     "android": {
       "package": "com.podcastme.app",
+      "versionCode": 1,
       "icon": "./assets/images/podcast-me-icon-android-v2.png",
       "adaptiveIcon": {
         "backgroundColor": "#06142B",
@@ -26,6 +27,7 @@
     },
     "plugins": [
       "expo-router",
+      "expo-asset",
       [
         "expo-splash-screen",
         {
@@ -47,6 +49,11 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d53173b9-00b8-4ec5-b2d3-3b770de03be8"
+      }
     }
   }
 }

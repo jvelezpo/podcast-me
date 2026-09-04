@@ -24,6 +24,20 @@
       "env": {
         "APP_VARIANT": "production"
       }
+    },
+    "production-apk": {
+      "extends": "production",
+      "developmentClient": false,
+      "distribution": "internal",
+      "environment": "production",
+      "credentialsSource": "remote",
+      "env": {
+        "APP_VARIANT": "production",
+        "NODE_ENV": "production"
+      },
+      "android": {
+        "buildType": "apk"
+      }
     }
   },
   "submit": {

@@ -51,6 +51,55 @@ eas build --profile development-simulator --platform ios
 
 Only the `production` submit profile exists. Do not submit a development build by file path or reuse its `.dev` identifier for a store application.
 
+## Install the production app directly on Android
+
+The `production-apk` EAS profile creates a signed, optimized APK using the production name, icon, and package `com.podcastme.app`. It is a standalone app: Expo Go, Metro, and a Play Store account are not required.
+
+### 1. Build the APK
+
+Prerequisites: install EAS CLI, sign in with `eas login`, and confirm the account with `eas whoami`. Local compilation also requires Java and the Android SDK.
+
+Build on EAS and receive a temporary download URL:
+
+```bash
+npm run build:android:production
+```
+
+Or compile on this Mac using the installed Android toolchain:
+
+```bash
+npm run build:android:production:local
+```
+
+The local command still securely retrieves the EAS-managed signing key, but compilation happens on this computer. Its output is `dist/podcast-me-production.apk` and the temporary build workspace containing signing material is automatically removed. Do not enable `EAS_LOCAL_BUILD_SKIP_CLEANUP` for production builds.
+
+The first build may ask to create Android signing credentials. Choose **Generate new keystore** and keep using that EAS-managed keystore for every future production build. When a cloud build finishes, open the URL printed by EAS and download the `.apk` file.
+
+For every distributed update, increase `expo.android.versionCode` in `app.json`, keep the package name unchanged, and build with the same EAS project and signing key. This lets Android update the existing installation without deleting the app's local audio library.
+
+### 2A. Install from the phone
+
+1. Send the EAS build URL or downloaded APK to the Android phone.
+2. Open the APK from the browser or Files app.
+3. If Android blocks it, open the offered settings screen and temporarily enable **Allow from this source** for that browser or Files app.
+4. Return to the installer, tap **Install**, and accept any Play Protect warning only if the APK came from your trusted build link.
+5. Open **Podcast Me** from the launcher. Disable **Allow from this source** afterward if it is no longer needed.
+
+### 2B. Install over USB with ADB
+
+1. On the phone, enable Developer options by tapping **Build number** seven times, then enable **USB debugging**.
+2. Connect the phone by USB and approve the computer's debugging prompt.
+3. Confirm the phone is visible and install or update the APK:
+
+```bash
+adb devices
+adb install -r dist/podcast-me-production.apk
+```
+
+The `-r` option keeps app data when the installed APK has the same package and signing key. If Android reports `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, do not uninstall immediately: uninstalling Podcast Me deletes its app-owned audio files and saved progress. Use an APK signed with the original production key instead.
+
+Android may show a warning because this APK did not come through Play Store review. Podcast Me supports Android 7 and newer under Expo SDK 57.
+
 You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
 
 ## Get a fresh project

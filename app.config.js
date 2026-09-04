@@ -1,5 +1,3 @@
-const { expo: productionConfig } = require('./app.json');
-
 const appVariant = process.env.APP_VARIANT ?? 'production';
 
 if (appVariant !== 'development' && appVariant !== 'production') {
@@ -10,7 +8,7 @@ if (appVariant !== 'development' && appVariant !== 'production') {
 
 const isDevelopment = appVariant === 'development';
 
-module.exports = {
+module.exports = ({ config: productionConfig }) => ({
   ...productionConfig,
   name: isDevelopment ? 'Podcast Me Dev' : productionConfig.name,
   icon: isDevelopment
@@ -52,4 +50,4 @@ module.exports = {
     ...productionConfig.extra,
     appVariant,
   },
-};
+});

@@ -134,6 +134,17 @@ These scenarios define the target behavior. Runtime verification is intentionall
 - [x] Add internal-distribution EAS profiles for development devices and the iOS Simulator. Expose only a `production` submit profile so the development app is not part of the store-submission workflow.
 - [x] Add local development scripts that cleanly regenerate ignored native projects with the development config before running, plus production scripts that regenerate production identifiers before release-oriented local runs.
 
+## 12. Distribute the production app directly on Android
+
+- [x] Link the repository to its EAS project so Android signing credentials and future production builds use a stable project identity.
+- [x] Set an explicit Android version code for direct-install releases and document that it must increase for distributed updates.
+- [x] Add a `production-apk` EAS profile that uses production branding, disables the development client, produces a release APK, uses EAS-managed signing, and is distributed outside the Play Store.
+- [x] Add a package script that starts the signed production APK build without requiring developers to remember the EAS profile name.
+- [x] Add a local production build command with sufficient Gradle metaspace that retrieves the managed signing key, compiles on the current machine, and writes the APK to the ignored `dist` directory.
+- [x] Build the local release APK and verify its production package, app/version metadata, minimum and target Android versions, absence of the debuggable flag, and release signature.
+- [x] Document installation from a downloaded APK and over USB with ADB, including unknown-source permission, signature mismatch, update, and local-data-loss warnings.
+- [ ] Install the signed APK on at least one physical Android device and smoke-test importing, playback, background audio, Bluetooth route changes, resume progress, reordering, removal, and an in-place APK update.
+
 ## Expo SDK 57 references
 
 The implementation should follow the versioned Expo documentation for [DocumentPicker](https://docs.expo.dev/versions/v57.0.0/sdk/document-picker/), [FileSystem](https://docs.expo.dev/versions/v57.0.0/sdk/filesystem/), [Audio](https://docs.expo.dev/versions/v57.0.0/sdk/audio/), and [AsyncStorage](https://docs.expo.dev/versions/v57.0.0/sdk/async-storage/).
