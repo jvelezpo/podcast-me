@@ -599,28 +599,30 @@ export function useAudioLibraryPlayer(
       const requestId = beginTransition();
       playbackRequested.current = false;
       setPlaybackError(null);
-      let didReleaseSource = false;
+      let didStopPlayer = false;
 
       try {
         player.pause();
         await persistCurrentPosition(itemId);
       } catch {
-        // Removal still has to release the source even if its final checkpoint fails.
+        // Removal still has to stop playback even if its final checkpoint fails.
       } finally {
         if (requestId === transitionSequence.current) {
           pendingLoad.current = null;
           try {
             player.setActiveForLockScreen(false);
-            player.replace(null);
-            didReleaseSource = true;
+            // `useAudioPlayer` owns this player. Android's native `replace` method
+            // requires an AudioSource, so `replace(null)` cannot clear it safely.
+            // The next load replaces the retained paused source.
+            didStopPlayer = true;
           } catch {
             setPlaybackError({
               itemId,
-              message: 'Playback could not release this recording. Try removing it again.',
+              message: 'Playback could not stop this recording. Try again.',
             });
           }
 
-          if (didReleaseSource) {
+          if (didStopPlayer) {
             activeItemRef.current = null;
             lastCheckpoint.current = null;
             setActiveItemId(null);
@@ -629,7 +631,7 @@ export function useAudioLibraryPlayer(
         }
       }
 
-      if (requestId !== transitionSequence.current || !didReleaseSource) {
+      if (requestId !== transitionSequence.current || !didStopPlayer) {
         return false;
       }
 
@@ -689,6 +691,16 @@ export function useAudioLibraryPlayer(
     [isLibraryReady, loadAndPlay, pausePlayback, playbackError?.itemId, resumePlayback]
   );
 
+  const dismissPlayer = useCallback(async (): Promise<boolean> => {
+    const itemId = activeItemRef.current?.id;
+
+    if (!itemId) {
+      return false;
+    }
+
+    return removeActiveItem(itemId, null, false);
+  }, [removeActiveItem]);
+
   return {
     activeItemId,
     currentPositionSeconds: finiteNonNegative(status.currentTime),
@@ -698,6 +710,7 @@ export function useAudioLibraryPlayer(
     isTransitioning,
     playbackError,
     playbackRate,
+    dismissPlayer,
     removeActiveItem,
     seekBy,
     seekTo,

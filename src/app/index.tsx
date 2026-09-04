@@ -118,14 +118,14 @@ export default function HomeScreen() {
       item.id,
       isActive
         ? async () => {
-            const released = await playback.removeActiveItem(
+            const stopped = await playback.removeActiveItem(
               item.id,
               nextItem,
               shouldPlayNext
             );
 
-            if (!released) {
-              throw new Error('The active player could not release the audio file.');
+            if (!stopped) {
+              throw new Error('The active player could not stop the audio file.');
             }
           }
         : undefined

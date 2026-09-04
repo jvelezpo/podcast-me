@@ -271,7 +271,7 @@ export function useAudioLibrary() {
         setNotice({
           kind: 'error',
           title: 'Audio not removed',
-          message: 'Playback could not release this audio file. Stop playback and try again.',
+          message: 'Playback could not stop this audio file. Try again.',
         });
         return { removed: false, fileDeletionFailed: false };
       }

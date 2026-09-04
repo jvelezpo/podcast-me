@@ -1,6 +1,12 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
-import { useEffect, useState } from 'react';
-import { Modal } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Animated,
+  Modal,
+  PanResponder,
+  type LayoutChangeEvent,
+  type PanResponderGestureState,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ScrollView, View, XStack, YStack, useMedia } from 'tamagui';
 
@@ -25,19 +31,117 @@ import {
 } from '@/utils/audio-display';
 
 const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+const SWIPE_DISMISS_FRACTION = 0.35;
+const SWIPE_DISMISS_MIN_DISTANCE = 72;
+const SWIPE_DISMISS_VELOCITY = 0.65;
+const SWIPE_INTENT_DISTANCE = 10;
 
 export function GlobalPlayer() {
   const { library, playback } = useAudioLibraryContext();
   const [isOpen, setIsOpen] = useState(false);
+  const [playerWidth, setPlayerWidth] = useState(0);
+  const activeItemIdRef = useRef<string | null>(null);
+  const canSwipeRef = useRef(false);
+  const dismissPlayerRef = useRef(playback.dismissPlayer);
+  const isDismissingRef = useRef(false);
+  const playerWidthRef = useRef(0);
+  const swipeOffset = useRef(new Animated.Value(0)).current;
   const media = useMedia();
   const theme = useTheme();
   const item = library.items.find((candidate) => candidate.id === playback.activeItemId) ?? null;
+  const activeItemId = item?.id ?? null;
 
   useEffect(() => {
-    if (!item) {
+    activeItemIdRef.current = activeItemId;
+    canSwipeRef.current =
+      activeItemId !== null &&
+      !isOpen &&
+      !playback.isTransitioning &&
+      !isDismissingRef.current;
+    dismissPlayerRef.current = playback.dismissPlayer;
+  }, [activeItemId, isOpen, playback.dismissPlayer, playback.isTransitioning]);
+
+  useEffect(() => {
+    if (!activeItemId) {
       setIsOpen(false);
     }
-  }, [item]);
+
+    isDismissingRef.current = false;
+    swipeOffset.setValue(0);
+  }, [activeItemId, swipeOffset]);
+
+  // Playback status updates frequently, so the responder reads current state from refs.
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
+  const swipeDismissResponder = useMemo(() => {
+    const restorePlayer = () => {
+      isDismissingRef.current = false;
+      Animated.spring(swipeOffset, {
+        toValue: 0,
+        damping: 20,
+        stiffness: 220,
+        mass: 0.8,
+        useNativeDriver: true,
+      }).start();
+    };
+
+    const shouldClaimSwipe = (_event: unknown, gesture: PanResponderGestureState) =>
+      canSwipeRef.current &&
+      Math.abs(gesture.dx) >= SWIPE_INTENT_DISTANCE &&
+      Math.abs(gesture.dx) > Math.abs(gesture.dy);
+
+    // PanResponder stores these callbacks and invokes them only for touch events.
+    // eslint-disable-next-line react-hooks/refs
+    return PanResponder.create({
+      onMoveShouldSetPanResponder: shouldClaimSwipe,
+      onMoveShouldSetPanResponderCapture: shouldClaimSwipe,
+      onPanResponderGrant: () => swipeOffset.stopAnimation(),
+      onPanResponderMove: (_event, gesture) => swipeOffset.setValue(gesture.dx),
+      onPanResponderRelease: (_event, gesture) => {
+        const dismissDistance = Math.max(
+          SWIPE_DISMISS_MIN_DISTANCE,
+          playerWidthRef.current * SWIPE_DISMISS_FRACTION
+        );
+        const movedFarEnough = Math.abs(gesture.dx) >= dismissDistance;
+        const movedFastEnough = Math.abs(gesture.vx) >= SWIPE_DISMISS_VELOCITY;
+
+        if (
+          !canSwipeRef.current ||
+          !activeItemIdRef.current ||
+          (!movedFarEnough && !movedFastEnough)
+        ) {
+          restorePlayer();
+          return;
+        }
+
+        isDismissingRef.current = true;
+        canSwipeRef.current = false;
+        const direction = gesture.dx < 0 ? -1 : 1;
+        const target = direction * (playerWidthRef.current + Spacing.four);
+
+        Animated.timing(swipeOffset, {
+          toValue: target,
+          duration: 180,
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (!finished) {
+            restorePlayer();
+            return;
+          }
+
+          void dismissPlayerRef
+            .current()
+            .then((didDismiss) => {
+              if (!didDismiss) {
+                restorePlayer();
+              }
+            })
+            .catch(restorePlayer);
+        });
+      },
+      onPanResponderTerminate: restorePlayer,
+      onPanResponderTerminationRequest: () => true,
+    });
+  }, [swipeOffset]);
 
   if (!item) {
     return null;
@@ -47,66 +151,87 @@ export function GlobalPlayer() {
   const progress = duration ? Math.min(playback.currentPositionSeconds / duration, 1) : 0;
   const artworkSize = media.short ? 220 : media.compact ? 276 : 340;
   const isDisabled = playback.isTransitioning || !playback.isReady || !item.isAvailable;
+  const fadeDistance = Math.max(playerWidth, 1);
+  const swipeOpacity = swipeOffset.interpolate({
+    inputRange: [-fadeDistance, 0, fadeDistance],
+    outputRange: [0, 1, 0],
+    extrapolate: 'clamp',
+  });
+
+  const handlePlayerLayout = (event: LayoutChangeEvent) => {
+    const width = event.nativeEvent.layout.width;
+    playerWidthRef.current = width;
+    setPlayerWidth(width);
+  };
 
   return (
     <>
-      <ThemedView
-        type="backgroundElement"
-        position="absolute"
-        zIndex={50}
-        right={Spacing.three}
-        bottom={BottomTabInset + Spacing.two}
-        left={Spacing.three}
-        maxWidth={Math.min(MaxContentWidth, 720)}
-        height={PlayerDockHeight}
-        alignSelf="center"
-        overflow="hidden"
-        borderWidth={1}
-        borderColor="$borderColor"
-        borderRadius={Radius.large}
-        boxShadow="0 12px 30px rgba(0,0,0,0.28)">
-        <XStack flex={1} alignItems="center" gap={Spacing.two} padding={Spacing.two}>
-          <AppButton
-            tone="ghost"
-            accessibilityLabel={`Open now playing for ${getEpisodeTitle(item.originalName)}`}
-            onPress={() => setIsOpen(true)}
-            minWidth={0}
-            flex={1}
-            justifyContent="flex-start"
-            padding={0}>
-            <EpisodeArtwork itemId={item.id} name={item.originalName} size={54} />
-            <YStack flex={1} minWidth={0} alignItems="flex-start">
-              <ThemedText type="episodeTitle" numberOfLines={1} width="100%">
-                {getEpisodeTitle(item.originalName)}
-              </ThemedText>
-              <ThemedText type="metadata" themeColor="textSecondary" numberOfLines={1}>
-                {playback.isTransitioning
-                  ? 'Loading…'
-                  : playback.isPlaying
-                    ? `${formatPlaybackTime(playback.currentPositionSeconds)} · Playing`
-                    : 'Paused'}
-              </ThemedText>
-            </YStack>
-          </AppButton>
+      <Animated.View
+        {...swipeDismissResponder.panHandlers}
+        onLayout={handlePlayerLayout}
+        style={{
+          position: 'absolute',
+          zIndex: 50,
+          right: Spacing.three,
+          bottom: BottomTabInset + Spacing.two,
+          left: Spacing.three,
+          maxWidth: Math.min(MaxContentWidth, 720),
+          height: PlayerDockHeight,
+          alignSelf: 'center',
+          opacity: swipeOpacity,
+          transform: [{ translateX: swipeOffset }],
+        }}>
+        <ThemedView
+          type="backgroundElement"
+          flex={1}
+          overflow="hidden"
+          borderWidth={1}
+          borderColor="$borderColor"
+          borderRadius={Radius.large}
+          boxShadow="0 12px 30px rgba(0,0,0,0.28)">
+          <XStack flex={1} alignItems="center" gap={Spacing.two} padding={Spacing.two}>
+            <AppButton
+              tone="ghost"
+              accessibilityLabel={`Open now playing for ${getEpisodeTitle(item.originalName)}`}
+              onPress={() => setIsOpen(true)}
+              minWidth={0}
+              flex={1}
+              justifyContent="flex-start"
+              padding={0}>
+              <EpisodeArtwork itemId={item.id} name={item.originalName} size={54} />
+              <YStack flex={1} minWidth={0} alignItems="flex-start">
+                <ThemedText type="episodeTitle" numberOfLines={1} width="100%">
+                  {getEpisodeTitle(item.originalName)}
+                </ThemedText>
+                <ThemedText type="metadata" themeColor="textSecondary" numberOfLines={1}>
+                  {playback.isTransitioning
+                    ? 'Loading…'
+                    : playback.isPlaying
+                      ? `${formatPlaybackTime(playback.currentPositionSeconds)} · Playing`
+                      : 'Paused'}
+                </ThemedText>
+              </YStack>
+            </AppButton>
 
-          <PlayerIconButton
-            accessibilityLabel={playback.isPlaying ? 'Pause' : 'Play'}
-            disabled={isDisabled}
-            icon={playback.isPlaying ? PAUSE_ICON : PLAY_ICON}
-            onPress={() => playback.togglePlayback(item)}
-            tintColor={theme.accentForeground}
-          />
-        </XStack>
-        <View
-          position="absolute"
-          right={0}
-          bottom={0}
-          left={0}
-          height={3}
-          backgroundColor="$backgroundSelected">
-          <View height="100%" width={`${progress * 100}%`} backgroundColor="$accent" />
-        </View>
-      </ThemedView>
+            <PlayerIconButton
+              accessibilityLabel={playback.isPlaying ? 'Pause' : 'Play'}
+              disabled={isDisabled}
+              icon={playback.isPlaying ? PAUSE_ICON : PLAY_ICON}
+              onPress={() => playback.togglePlayback(item)}
+              tintColor={theme.accentForeground}
+            />
+          </XStack>
+          <View
+            position="absolute"
+            right={0}
+            bottom={0}
+            left={0}
+            height={3}
+            backgroundColor="$backgroundSelected">
+            <View height="100%" width={`${progress * 100}%`} backgroundColor="$accent" />
+          </View>
+        </ThemedView>
+      </Animated.View>
 
       <Modal
         animationType="slide"
