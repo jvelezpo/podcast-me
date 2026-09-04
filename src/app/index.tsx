@@ -119,6 +119,8 @@ export default function HomeScreen() {
                 currentPositionSeconds={playback.currentPositionSeconds}
                 loadedDurationSeconds={playback.durationSeconds}
                 playbackError={playback.playbackError}
+                onSeekBy={playback.seekBy}
+                onSeekTo={playback.seekTo}
                 onTogglePlayback={playback.togglePlayback}
               />
             );

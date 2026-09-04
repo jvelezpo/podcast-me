@@ -1,5 +1,6 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
+import { AudioPlaybackSlider } from '@/components/audio-playback-slider';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
@@ -16,6 +17,8 @@ type AudioLibraryRowProps = {
   currentPositionSeconds: number;
   loadedDurationSeconds: number | null;
   playbackError: AudioPlaybackError | null;
+  onSeekBy: (seconds: number) => void;
+  onSeekTo: (positionSeconds: number) => void;
   onTogglePlayback: (item: LoadedAudioItem) => void;
 };
 
@@ -28,6 +31,8 @@ export function AudioLibraryRow({
   currentPositionSeconds,
   loadedDurationSeconds,
   playbackError,
+  onSeekBy,
+  onSeekTo,
   onTogglePlayback,
 }: AudioLibraryRowProps) {
   const theme = useTheme();
@@ -35,7 +40,6 @@ export function AudioLibraryRow({
   const durationSeconds = isActive
     ? loadedDurationSeconds ?? item.durationSeconds
     : item.durationSeconds;
-  const progress = getProgress(positionSeconds, durationSeconds);
   const itemError = playbackError?.itemId === item.id ? playbackError.message : null;
   const isBusy = isActive && isTransitioning;
   const isButtonDisabled = !isPlaybackReady || !item.isAvailable || isTransitioning;
@@ -56,11 +60,6 @@ export function AudioLibraryRow({
           <ThemedText type="smallBold" numberOfLines={2}>
             {item.originalName}
           </ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            {durationSeconds === null
-              ? `Saved at ${formatPlaybackTime(positionSeconds)} · Duration unknown`
-              : `${formatPlaybackTime(positionSeconds)} / ${formatPlaybackTime(durationSeconds)}`}
-          </ThemedText>
         </View>
 
         <Pressable
@@ -79,21 +78,30 @@ export function AudioLibraryRow({
         </Pressable>
       </View>
 
-      <View
-        accessibilityRole="progressbar"
-        accessibilityLabel={`${item.originalName} playback progress`}
-        accessibilityValue={{ min: 0, max: 100, now: Math.round(progress * 100) }}
-        style={[styles.progressTrack, { backgroundColor: theme.background }]}>
-        <View
-          style={[
-            styles.progressFill,
-            {
-              backgroundColor: theme.text,
-              width: `${Math.round(progress * 100)}%`,
-            },
-          ]}
-        />
-      </View>
+      <AudioPlaybackSlider
+        accessibilityLabel={`${item.originalName} playback position`}
+        disabled={!isActive || isButtonDisabled || durationSeconds === null}
+        durationSeconds={durationSeconds}
+        onSeekTo={onSeekTo}
+        positionSeconds={positionSeconds}
+      />
+
+      {isActive && (
+        <View style={styles.seekControls}>
+          <SeekButton
+            accessibilityLabel={`Rewind ${item.originalName} by 15 seconds`}
+            disabled={isButtonDisabled}
+            label="−15 sec"
+            onPress={() => onSeekBy(-15)}
+          />
+          <SeekButton
+            accessibilityLabel={`Move ${item.originalName} forward by 15 seconds`}
+            disabled={isButtonDisabled}
+            label="+15 sec"
+            onPress={() => onSeekBy(15)}
+          />
+        </View>
+      )}
 
       {isActive && !itemError && (
         <ThemedText type="small" themeColor="textSecondary">
@@ -116,31 +124,32 @@ export function AudioLibraryRow({
   );
 }
 
-function getProgress(positionSeconds: number, durationSeconds: number | null): number {
-  if (!durationSeconds || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
-    return 0;
-  }
+type SeekButtonProps = {
+  accessibilityLabel: string;
+  disabled: boolean;
+  label: string;
+  onPress: () => void;
+};
 
-  return Math.min(Math.max(positionSeconds / durationSeconds, 0), 1);
-}
+function SeekButton({ accessibilityLabel, disabled, label, onPress }: SeekButtonProps) {
+  const theme = useTheme();
 
-function formatPlaybackTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) {
-    return '0:00';
-  }
-
-  const totalSeconds = Math.floor(seconds);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const remainingSeconds = totalSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, '0')}:${remainingSeconds
-      .toString()
-      .padStart(2, '0')}`;
-  }
-
-  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.seekButton,
+        { borderColor: theme.text },
+        pressed && styles.pressed,
+        disabled && styles.disabled,
+      ]}>
+      <ThemedText type="smallBold">{label}</ThemedText>
+    </Pressable>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -167,14 +176,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: Spacing.three,
   },
-  progressTrack: {
-    height: Spacing.one,
-    borderRadius: Spacing.one,
-    overflow: 'hidden',
+  seekControls: {
+    flexDirection: 'row',
+    gap: Spacing.two,
   },
-  progressFill: {
-    height: '100%',
-    borderRadius: Spacing.one,
+  seekButton: {
+    minHeight: 44,
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: Spacing.three,
   },
   pressed: {
     opacity: 0.7,

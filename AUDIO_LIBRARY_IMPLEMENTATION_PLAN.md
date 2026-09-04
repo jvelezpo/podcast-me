@@ -88,15 +88,19 @@ These scenarios define the target behavior. Runtime verification is intentionall
 - [x] Ignore non-finite or negative times and never persist a position greater than the known duration.
 - [x] Load the library before enabling Play controls so the first playback action always has access to the saved resume position.
 
-## 9. Route playback to appropriate Bluetooth devices
+## 9. Route playback and provide a native media experience
 
-- [ ] Configure playback as media audio with `allowsRecording: false` and `shouldRouteThroughEarpiece: false`, then allow Android and iOS to send sound to the operating system's currently active media-output route.
+- [x] Configure playback as media audio with `allowsRecording: false` and `shouldRouteThroughEarpiece: false`, then allow Android and iOS to send sound to the operating system's currently active media-output route.
 - [ ] Treat Bluetooth earbuds, headphones, speakers, car stereos, CarPlay systems, and equivalent devices as valid only when the operating system exposes them as the active media-audio output, such as an A2DP or LE Audio output.
 - [ ] Do not enumerate all paired Bluetooth devices or request Bluetooth permissions merely to decide where sound should play; a connected peripheral is not necessarily an audio-output device.
 - [ ] Keep playback on the phone or another active media output when a watch is connected only for notifications, controls, health data, or other non-audio services.
 - [ ] Do not identify watches by device name, manufacturer text, or a hard-coded denylist because names can change and the same Bluetooth audio profiles are used by legitimate speakers and headsets.
 - [ ] Document the platform boundary: if a watch deliberately advertises itself as a media-audio output and the user or operating system selects it, Expo Audio cannot reliably distinguish it from another Bluetooth speaker; an absolute device-specific block would require a separately scoped native investigation and may also block legitimate devices.
-- [ ] When a Bluetooth audio device disconnects, keep the last playback checkpoint and do not automatically restart through the phone speaker; require the user to press Play again to avoid unexpected loud audio.
+- [x] When a Bluetooth media-output connection changes while playback is requested, pause immediately, persist the checkpoint, wait briefly for the operating-system route to settle, and resume automatically on the new route.
+- [x] Configure a standalone Android/iOS application identity and launcher icon so Podcast Me installs as its own app instead of running under Expo Go.
+- [x] Provide accessible controls that seek the active recording backward or forward by 15 seconds, clamped to the recording bounds.
+- [x] Provide an accessible playback-position slider with current and total time, horizontal seeking, fine scrubbing above the track, and fast scrubbing below it. Preserve the previewed time when changing vertical speed zones and show speed-and-direction feedback while dragging.
+- [x] Enable background playback, lock-screen media controls, and the Android media-playback foreground service so playback continues while the app is minimized or the device is locked.
 - [ ] Test Bluetooth routing with representative earbuds, a speaker, and a car: connect each device, make it the system's active media output, press Play, and confirm that no sound comes from the phone speaker.
 - [ ] Test with a watch connected by itself and with a valid Bluetooth audio output connected at the same time; confirm that the watch is ignored unless the operating system explicitly exposes it as the selected media output.
 - [ ] Test connecting, switching, and disconnecting Bluetooth outputs during playback and confirm that playback state and saved resume time remain correct.

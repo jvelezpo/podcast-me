@@ -1,7 +1,8 @@
-import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
+import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
+import { addBluetoothRouteChangeListener } from '../../modules/audio-route-monitor';
 import type { AudioItemPlaybackUpdate } from '@/hooks/use-audio-library';
 import type { LoadedAudioItem } from '@/services/audio-library-storage';
 
@@ -23,6 +24,7 @@ type PendingLoad = {
 };
 
 const CHECKPOINT_INTERVAL_MS = 5_000;
+const ROUTE_SETTLE_DELAY_MS = 600;
 
 export function useAudioLibraryPlayer(
   updateAudioItem: UpdateAudioItem,
@@ -39,6 +41,8 @@ export function useAudioLibraryPlayer(
   const transitionSequence = useRef(0);
   const pendingLoad = useRef<PendingLoad | null>(null);
   const lastCheckpoint = useRef<{ itemId: string; savedAt: number } | null>(null);
+  const audioModePromise = useRef<Promise<void> | null>(null);
+  const playbackRequested = useRef(false);
 
   const finishTransition = useCallback(() => {
     transitionInProgress.current = false;
@@ -51,6 +55,41 @@ export function useAudioLibraryPlayer(
     setIsTransitioning(true);
     return transitionSequence.current;
   }, []);
+
+  const ensureAudioMode = useCallback(() => {
+    if (!audioModePromise.current) {
+      audioModePromise.current = setAudioModeAsync({
+        allowsRecording: false,
+        interruptionMode: 'doNotMix',
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+        shouldRouteThroughEarpiece: false,
+      }).catch((error) => {
+        audioModePromise.current = null;
+        throw error;
+      });
+    }
+
+    return audioModePromise.current;
+  }, []);
+
+  const activateLockScreenControls = useCallback(
+    (item: LoadedAudioItem) => {
+      player.setActiveForLockScreen(
+        true,
+        {
+          title: item.originalName,
+          artist: 'Podcast Me',
+        },
+        {
+          isLiveStream: false,
+          showSeekBackward: true,
+          showSeekForward: true,
+        }
+      );
+    },
+    [player]
+  );
 
   const persistMetadata = useCallback(
     async (itemId: string, update: AudioItemPlaybackUpdate) => {
@@ -69,8 +108,10 @@ export function useAudioLibraryPlayer(
       }
 
       pendingLoad.current = null;
+      playbackRequested.current = false;
       try {
         player.pause();
+        player.setActiveForLockScreen(false);
       } catch {
         // The native player may already be unavailable after a load failure.
       }
@@ -119,9 +160,11 @@ export function useAudioLibraryPlayer(
     async (item: LoadedAudioItem) => {
       const requestId = beginTransition();
       const previousItemId = activeItemRef.current?.id ?? null;
+      playbackRequested.current = true;
       setPlaybackError(null);
 
       try {
+        await ensureAudioMode();
         player.pause();
 
         if (previousItemId && previousItemId !== item.id) {
@@ -152,12 +195,13 @@ export function useAudioLibraryPlayer(
         );
       }
     },
-    [beginTransition, failPlayback, persistCurrentPosition, player]
+    [beginTransition, ensureAudioMode, failPlayback, persistCurrentPosition, player]
   );
 
   const pausePlayback = useCallback(
     async (item: LoadedAudioItem) => {
       const requestId = beginTransition();
+      playbackRequested.current = false;
       setPlaybackError(null);
 
       try {
@@ -177,9 +221,11 @@ export function useAudioLibraryPlayer(
   const resumePlayback = useCallback(
     async (item: LoadedAudioItem) => {
       const requestId = beginTransition();
+      playbackRequested.current = true;
       setPlaybackError(null);
 
       try {
+        await ensureAudioMode();
         const currentStatus = statusRef.current;
         const activeItem = activeItemRef.current ?? item;
         const duration =
@@ -200,18 +246,169 @@ export function useAudioLibraryPlayer(
         }
 
         lastCheckpoint.current = { itemId: item.id, savedAt: Date.now() };
+        activateLockScreenControls(item);
         player.play();
         finishTransition();
       } catch {
         failPlayback(item.id, 'Playback could not resume. Try again.', requestId);
       }
     },
+    [
+      activateLockScreenControls,
+      beginTransition,
+      ensureAudioMode,
+      failPlayback,
+      finishTransition,
+      persistPosition,
+      player,
+    ]
+  );
+
+  const seekTo = useCallback(
+    (positionSeconds: number): void => {
+      const activeItem = activeItemRef.current;
+      const currentStatus = statusRef.current;
+
+      if (
+        !activeItem ||
+        !currentStatus.isLoaded ||
+        pendingLoad.current ||
+        transitionInProgress.current
+      ) {
+        return;
+      }
+
+      const duration =
+        finitePositive(currentStatus.duration) ?? activeItem.durationSeconds;
+
+      if (!Number.isFinite(positionSeconds)) {
+        return;
+      }
+
+      const targetPosition = clampPosition(Math.max(positionSeconds, 0), duration);
+
+      const requestId = beginTransition();
+
+      void (async () => {
+        try {
+          await player.seekTo(targetPosition);
+
+          if (requestId !== transitionSequence.current) {
+            return;
+          }
+
+          await persistPosition(activeItem.id, targetPosition, duration);
+
+          if (requestId === transitionSequence.current) {
+            finishTransition();
+          }
+        } catch {
+          failPlayback(
+            activeItem.id,
+            'Playback could not move to the requested position. Try again.',
+            requestId
+          );
+        }
+      })();
+    },
     [beginTransition, failPlayback, finishTransition, persistPosition, player]
+  );
+
+  const seekBy = useCallback(
+    (offsetSeconds: number): void => {
+      const activeItem = activeItemRef.current;
+
+      if (!activeItem) {
+        return;
+      }
+
+      const currentStatus = statusRef.current;
+      const duration =
+        finitePositive(currentStatus.duration) ?? activeItem.durationSeconds;
+      const currentPosition = safePosition(currentStatus.currentTime, duration);
+
+      if (currentPosition !== null) {
+        seekTo(currentPosition + offsetSeconds);
+      }
+    },
+    [seekTo]
   );
 
   useEffect(() => {
     statusRef.current = status;
+
+    if (
+      status.isLoaded &&
+      !pendingLoad.current &&
+      !transitionInProgress.current
+    ) {
+      playbackRequested.current = status.playing;
+    }
   }, [status]);
+
+  useEffect(() => {
+    void ensureAudioMode().catch(() => undefined);
+  }, [ensureAudioMode]);
+
+  useEffect(() => {
+    const subscription = addBluetoothRouteChangeListener(() => {
+      const activeItem = activeItemRef.current;
+
+      if (
+        !activeItem ||
+        !statusRef.current.isLoaded ||
+        !playbackRequested.current ||
+        pendingLoad.current ||
+        transitionInProgress.current
+      ) {
+        return;
+      }
+
+      const requestId = beginTransition();
+      player.pause();
+
+      void (async () => {
+        try {
+          await persistCurrentPosition(activeItem.id);
+          await delay(ROUTE_SETTLE_DELAY_MS);
+
+          if (
+            requestId !== transitionSequence.current ||
+            activeItemRef.current?.id !== activeItem.id ||
+            !playbackRequested.current
+          ) {
+            return;
+          }
+
+          await ensureAudioMode();
+
+          if (requestId !== transitionSequence.current) {
+            return;
+          }
+
+          activateLockScreenControls(activeItem);
+          player.play();
+          finishTransition();
+        } catch {
+          failPlayback(
+            activeItem.id,
+            'Playback could not recover after the Bluetooth route changed. Try again.',
+            requestId
+          );
+        }
+      })();
+    });
+
+    return () => subscription.remove();
+  }, [
+    activateLockScreenControls,
+    beginTransition,
+    ensureAudioMode,
+    failPlayback,
+    finishTransition,
+    persistCurrentPosition,
+    player,
+  ]);
 
   useEffect(() => {
     const activeItem = activeItemRef.current;
@@ -267,8 +464,10 @@ export function useAudioLibraryPlayer(
       if (activeItem) {
         void persistCurrentPosition(activeItem.id);
       }
+
+      player.setActiveForLockScreen(false);
     };
-  }, [persistCurrentPosition]);
+  }, [persistCurrentPosition, player]);
 
   useEffect(() => {
     const pending = pendingLoad.current;
@@ -312,6 +511,7 @@ export function useAudioLibraryPlayer(
           return;
         }
 
+        activateLockScreenControls(pending.item);
         player.play();
 
         if (pendingLoad.current?.requestId !== pending.requestId) {
@@ -331,6 +531,7 @@ export function useAudioLibraryPlayer(
   }, [
     failPlayback,
     finishTransition,
+    activateLockScreenControls,
     persistPosition,
     player,
     status.duration,
@@ -377,7 +578,9 @@ export function useAudioLibraryPlayer(
     transitionSequence.current += 1;
     finishTransition();
     lastCheckpoint.current = null;
+    playbackRequested.current = false;
     activeItemRef.current = null;
+    player.setActiveForLockScreen(false);
     setActiveItemId(null);
     setPlaybackError(null);
 
@@ -386,7 +589,7 @@ export function useAudioLibraryPlayer(
       lastPositionSeconds: 0,
       ...(duration === null ? {} : { durationSeconds: duration }),
     });
-  }, [finishTransition, status.didJustFinish, status.duration, updateAudioItem]);
+  }, [finishTransition, player, status.didJustFinish, status.duration, updateAudioItem]);
 
   const togglePlayback = useCallback(
     (item: LoadedAudioItem): void => {
@@ -419,6 +622,8 @@ export function useAudioLibraryPlayer(
     isReady: isLibraryReady,
     isTransitioning,
     playbackError,
+    seekBy,
+    seekTo,
     togglePlayback,
   };
 }
@@ -441,4 +646,8 @@ function safePosition(positionSeconds: number, durationSeconds: number | null): 
   }
 
   return durationSeconds === null ? positionSeconds : Math.min(positionSeconds, durationSeconds);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

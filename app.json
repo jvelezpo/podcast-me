@@ -1,35 +1,35 @@
 {
   "expo": {
-    "name": "podcast-me",
+    "name": "Podcast Me",
     "slug": "podcast-me",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/podcast-me-icon.png",
     "scheme": "podcastme",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "bundleIdentifier": "com.podcastme.app"
     },
     "android": {
+      "package": "com.podcastme.app",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#06142B",
+        "foregroundImage": "./assets/images/podcast-me-foreground.png",
+        "monochromeImage": "./assets/images/podcast-me-foreground.png"
       },
       "predictiveBackGestureEnabled": false
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/podcast-me-icon.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "image": "./assets/images/splash-icon.png",
+          "backgroundColor": "#06142B",
+          "image": "./assets/images/podcast-me-foreground.png",
           "imageWidth": 76
         }
       ],
@@ -39,7 +39,7 @@
           "microphonePermission": false,
           "recordAudioAndroid": false,
           "enableBackgroundRecording": false,
-          "enableBackgroundPlayback": false
+          "enableBackgroundPlayback": true
         }
       ]
     ],
