@@ -131,6 +131,7 @@ function toStoredAudioItem(item: AudioItem): AudioItem {
     contentFingerprint: item.contentFingerprint ?? null,
     durationSeconds: item.durationSeconds,
     lastPositionSeconds: item.lastPositionSeconds,
+    isPlayed: item.isPlayed ?? false,
     addedAt: item.addedAt,
     updatedAt: item.updatedAt,
   };
@@ -152,6 +153,7 @@ function isAudioItem(value: unknown): value is AudioItem {
     isOptionalFingerprint(item.contentFingerprint) &&
     isNullableNonNegativeNumber(item.durationSeconds) &&
     isNonNegativeNumber(item.lastPositionSeconds) &&
+    isOptionalBoolean(item.isPlayed) &&
     isValidTimestamp(item.addedAt) &&
     isValidTimestamp(item.updatedAt)
   );
@@ -195,6 +197,10 @@ function isNonNegativeNumber(value: unknown): value is number {
 
 function isNullableNonNegativeNumber(value: unknown): value is number | null {
   return value === null || isNonNegativeNumber(value);
+}
+
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+  return value === undefined || typeof value === 'boolean';
 }
 
 function isValidTimestamp(value: unknown): value is string {

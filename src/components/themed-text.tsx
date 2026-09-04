@@ -4,7 +4,19 @@ import { Text, type GetProps } from 'tamagui';
 import { Fonts, ThemeColor } from '@/constants/theme';
 
 export type ThemedTextProps = GetProps<typeof Text> & {
-  type?: 'default' | 'title' | 'small' | 'smallBold' | 'subtitle' | 'link' | 'linkPrimary' | 'code';
+  type?:
+    | 'default'
+    | 'title'
+    | 'heading'
+    | 'episodeTitle'
+    | 'eyebrow'
+    | 'metadata'
+    | 'small'
+    | 'smallBold'
+    | 'subtitle'
+    | 'link'
+    | 'linkPrimary'
+    | 'code';
   themeColor?: ThemeColor;
 };
 
@@ -15,6 +27,10 @@ export function ThemedText({ style, type = 'default', themeColor, ...rest }: The
       style={[
         type === 'default' && styles.default,
         type === 'title' && styles.title,
+        type === 'heading' && styles.heading,
+        type === 'episodeTitle' && styles.episodeTitle,
+        type === 'eyebrow' && styles.eyebrow,
+        type === 'metadata' && styles.metadata,
         type === 'small' && styles.small,
         type === 'smallBold' && styles.smallBold,
         type === 'subtitle' && styles.subtitle,
@@ -34,6 +50,8 @@ const themeColorTokens = {
   backgroundSelected: '$backgroundSelected',
   text: '$color',
   textSecondary: '$colorMuted',
+  accent: '$accent',
+  accentSubtle: '$accentSubtle',
 } as const;
 
 const styles = {
@@ -53,14 +71,40 @@ const styles = {
     fontWeight: 500,
   },
   title: {
-    fontSize: 48,
-    fontWeight: 600,
-    lineHeight: 52,
+    fontSize: 40,
+    fontWeight: 700,
+    lineHeight: 46,
+    letterSpacing: -1.2,
+  },
+  heading: {
+    fontSize: 24,
+    fontWeight: 700,
+    lineHeight: 30,
+    letterSpacing: -0.35,
+  },
+  episodeTitle: {
+    fontSize: 17,
+    fontWeight: 700,
+    lineHeight: 22,
+    letterSpacing: -0.2,
+  },
+  eyebrow: {
+    fontSize: 12,
+    fontWeight: 800,
+    lineHeight: 16,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  metadata: {
+    fontSize: 13,
+    fontWeight: 500,
+    lineHeight: 18,
   },
   subtitle: {
-    fontSize: 32,
-    lineHeight: 44,
-    fontWeight: 600,
+    fontSize: 30,
+    lineHeight: 38,
+    fontWeight: 700,
+    letterSpacing: -0.6,
   },
   link: {
     lineHeight: 30,
@@ -69,7 +113,7 @@ const styles = {
   linkPrimary: {
     lineHeight: 30,
     fontSize: 14,
-    color: '#3c87f7',
+    color: '#6558E8',
   },
   code: {
     fontFamily: Fonts.mono,

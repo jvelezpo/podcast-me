@@ -12,10 +12,11 @@
     },
     "android": {
       "package": "com.podcastme.app",
+      "icon": "./assets/images/podcast-me-icon-android-v2.png",
       "adaptiveIcon": {
         "backgroundColor": "#06142B",
-        "foregroundImage": "./assets/images/podcast-me-foreground.png",
-        "monochromeImage": "./assets/images/podcast-me-foreground.png"
+        "foregroundImage": "./assets/images/podcast-me-foreground-v2.png",
+        "monochromeImage": "./assets/images/podcast-me-monochrome-v2.png"
       },
       "predictiveBackGestureEnabled": false
     },

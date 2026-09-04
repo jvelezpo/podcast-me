@@ -34,7 +34,7 @@ export type RemoveAudioOutcome = {
 };
 
 export type AudioItemPlaybackUpdate = Partial<
-  Pick<AudioItem, 'durationSeconds' | 'lastPositionSeconds'>
+  Pick<AudioItem, 'durationSeconds' | 'lastPositionSeconds' | 'isPlayed'>
 >;
 
 export function useAudioLibrary() {
@@ -357,8 +357,10 @@ export function useAudioLibrary() {
       const hasPositionChange =
         update.lastPositionSeconds !== undefined &&
         update.lastPositionSeconds !== currentItem.lastPositionSeconds;
+      const hasPlayedChange =
+        update.isPlayed !== undefined && update.isPlayed !== currentItem.isPlayed;
 
-      if (!hasDurationChange && !hasPositionChange) {
+      if (!hasDurationChange && !hasPositionChange && !hasPlayedChange) {
         return true;
       }
 

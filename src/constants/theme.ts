@@ -10,7 +10,9 @@ export type ThemeColor =
   | 'background'
   | 'backgroundElement'
   | 'backgroundSelected'
-  | 'textSecondary';
+  | 'textSecondary'
+  | 'accent'
+  | 'accentSubtle';
 
 export const Fonts = Platform.select({
   ios: {
@@ -47,5 +49,14 @@ export const Spacing = {
   six: 64,
 } as const;
 
-export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
-export const MaxContentWidth = 800;
+export const Radius = {
+  small: 10,
+  medium: 16,
+  large: 24,
+  round: 999,
+} as const;
+
+export const BottomTabInset = Platform.select({ ios: 64, android: 84, web: 82 }) ?? 0;
+export const PlayerDockHeight = 78;
+export const BottomPlayerInset = BottomTabInset + PlayerDockHeight + Spacing.three;
+export const MaxContentWidth = 1040;

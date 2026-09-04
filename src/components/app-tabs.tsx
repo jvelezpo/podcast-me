@@ -7,22 +7,45 @@ export default function AppTabs() {
 
   return (
     <NativeTabs
-      backgroundColor={theme.background}
-      indicatorColor={theme.backgroundElement}
-      labelStyle={{ selected: { color: theme.text } }}>
-      <NativeTabs.Trigger name="index">
-        <NativeTabs.Trigger.Label>Home</NativeTabs.Trigger.Label>
+      backgroundColor={theme.backgroundElement}
+      indicatorColor={theme.accentSubtle}
+      iconColor={{ default: theme.textSecondary, selected: theme.accent }}
+      labelStyle={{
+        default: { color: theme.textSecondary, fontSize: 12, fontWeight: '600' },
+        selected: { color: theme.accent, fontSize: 12, fontWeight: '700' },
+      }}
+      shadowColor={theme.borderColor}
+      disableTransparentOnScrollEdge
+      sidebarAdaptable>
+      <NativeTabs.Trigger name="index" disableTransparentOnScrollEdge>
+        <NativeTabs.Trigger.Label>Library</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
-          src={require('@/assets/images/tabIcons/home.png')}
-          renderingMode="template"
+          sf={{ default: 'books.vertical', selected: 'books.vertical.fill' }}
+          md={{ default: 'library_music', selected: 'library_music' }}
         />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="explore">
-        <NativeTabs.Trigger.Label>Explore</NativeTabs.Trigger.Label>
+      <NativeTabs.Trigger name="explore" disableTransparentOnScrollEdge>
+        <NativeTabs.Trigger.Label>Discover</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
-          src={require('@/assets/images/tabIcons/explore.png')}
-          renderingMode="template"
+          sf={{ default: 'safari', selected: 'safari.fill' }}
+          md={{ default: 'explore', selected: 'explore' }}
+        />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="search" disableTransparentOnScrollEdge>
+        <NativeTabs.Trigger.Label>Search</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf={{ default: 'magnifyingglass', selected: 'magnifyingglass' }}
+          md={{ default: 'search', selected: 'search' }}
+        />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="profile" disableTransparentOnScrollEdge>
+        <NativeTabs.Trigger.Label>Profile</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf={{ default: 'person.crop.circle', selected: 'person.crop.circle.fill' }}
+          md={{ default: 'person', selected: 'person' }}
         />
       </NativeTabs.Trigger>
     </NativeTabs>

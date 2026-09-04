@@ -69,6 +69,10 @@ These scenarios define the target behavior. Runtime verification is intentionall
 - [x] Confirm before removing an item, remove both its persisted metadata and app-owned file, and release an active source before deletion. If it was playing, continue with the next available item (falling back to an earlier available item) or report that no playable files remain.
 - [x] Provide a vertical drag handle for reordering, persist the resulting array order, and leave the shared native player's active source untouched while rows move.
 - [x] Configure Tamagui at the app root and use its themed primitives for app-owned text, surfaces, buttons, slider, collapsibles, rows, notices, and web tabs, with compact, wide, and short-screen adaptations. Keep native wrappers only where the platform API is required for navigation, lists, alerts, safe areas, gestures, or animation.
+- [x] Apply one reusable premium design system across the app with a dark-first palette, persistent light/dark/system preferences, accessible contrast, responsive spacing, rounded surfaces, and restrained shadows.
+- [x] Render compact episode cards with generated artwork, prominent titles, muted metadata, duration, played/unplayed progress, offline availability, and thumb-friendly playback and management actions.
+- [x] Keep a sticky mini-player visible across browsing routes and let it expand into a full now-playing screen with large artwork, elapsed/remaining/total time, precision scrubbing, 15-second seek controls, play/pause, playback speed, and queue context.
+- [x] Provide simple responsive navigation for Library, Discover, Search, and Profile. Preserve local downloads and playlist ordering as the app's download and queue experiences, and expose theme and playback status in Profile.
 
 ## 7. Implement one shared playback controller
 

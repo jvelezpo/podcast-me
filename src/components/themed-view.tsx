@@ -16,4 +16,6 @@ const themeColorTokens = {
   backgroundSelected: '$backgroundSelected',
   text: '$color',
   textSecondary: '$colorMuted',
+  accent: '$accent',
+  accentSubtle: '$accentSubtle',
 } as const;

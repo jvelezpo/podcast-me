@@ -13,7 +13,12 @@ export function useTheme() {
     backgroundElement: getVariable(theme.backgroundElement),
     backgroundSelected: getVariable(theme.backgroundSelected),
     borderColor: getVariable(theme.borderColor),
+    accent: getVariable(theme.accent),
+    accentForeground: getVariable(theme.accentForeground),
+    accentSubtle: getVariable(theme.accentSubtle),
     danger: getVariable(theme.danger),
+    success: getVariable(theme.success),
+    warning: getVariable(theme.warning),
     text: getVariable(theme.color),
     textSecondary: getVariable(theme.colorMuted),
   };

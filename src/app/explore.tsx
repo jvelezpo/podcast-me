@@ -1,162 +1,284 @@
-import { Image } from 'expo-image';
-import { SymbolView } from 'expo-symbols';
-import { Platform } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ScrollView, YStack } from 'tamagui';
+import { useRouter } from 'expo-router';
+import { SymbolView, type SymbolViewProps } from 'expo-symbols';
+import { StyleSheet } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { ScrollView, View, XStack, YStack, useMedia } from 'tamagui';
 
-import { ExternalLink } from '@/components/external-link';
+import { EpisodeResultRow } from '@/components/episode-result-row';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { AppButton } from '@/components/ui/app-button';
-import { Collapsible } from '@/components/ui/collapsible';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import {
+  BottomPlayerInset,
+  BottomTabInset,
+  MaxContentWidth,
+  Radius,
+  Spacing,
+} from '@/constants/theme';
+import { useAudioLibraryContext } from '@/contexts/audio-library-context';
 import { useTheme } from '@/hooks/use-theme';
 
-export default function TabTwoScreen() {
-  const safeAreaInsets = useSafeAreaInsets();
-  const insets = {
-    ...safeAreaInsets,
-    bottom: safeAreaInsets.bottom + BottomTabInset + Spacing.three,
-  };
+export default function DiscoverScreen() {
+  const { library, playback } = useAudioLibraryContext();
+  const router = useRouter();
+  const media = useMedia();
   const theme = useTheme();
-
-  const contentPlatformStyle = Platform.select({
-    android: {
-      paddingTop: insets.top,
-      paddingLeft: insets.left,
-      paddingRight: insets.right,
-      paddingBottom: insets.bottom,
-    },
-    web: {
-      paddingTop: Spacing.six,
-      paddingBottom: Spacing.four,
-    },
-  });
-  const contentContainerStyle = {
-    ...contentStyles.container,
-    ...contentPlatformStyle,
-  };
+  const activeItem =
+    library.items.find((item) => item.id === playback.activeItemId) ??
+    library.items.find((item) => item.lastPositionSeconds > 0) ??
+    library.items[0] ??
+    null;
+  const recentItems = [...library.items]
+    .sort((first, second) => second.addedAt.localeCompare(first.addedAt))
+    .slice(0, 3);
+  const hasPlayer = playback.activeItemId !== null;
 
   return (
-    <ScrollView
-      flex={1}
-      backgroundColor="$background"
-      contentInset={insets}
-      contentContainerStyle={contentContainerStyle}>
-      <ThemedView width="100%" maxWidth={MaxContentWidth} flexGrow={1}>
-        <ThemedView
-          gap={Spacing.three}
-          alignItems="center"
-          paddingHorizontal={Spacing.four}
-          paddingVertical={Spacing.six}
-          $compact={{ paddingHorizontal: Spacing.three, paddingVertical: Spacing.five }}
-          $short={{ paddingVertical: Spacing.four }}>
-          <ThemedText type="subtitle">Explore</ThemedText>
-          <ThemedText textAlign="center" themeColor="textSecondary">
-            This starter app includes example{`\n`}code to help you get started.
-          </ThemedText>
-
-          <ExternalLink href="https://docs.expo.dev" asChild>
-            <AppButton borderWidth={0} borderRadius={Spacing.five}>
-              <ThemedText type="link">Expo documentation</ThemedText>
-              <SymbolView
-                tintColor={theme.text}
-                name={{ ios: 'arrow.up.right.square', android: 'link', web: 'link' }}
-                size={12}
-              />
-            </AppButton>
-          </ExternalLink>
-        </ThemedView>
-
-        <YStack
-          gap={Spacing.five}
-          paddingHorizontal={Spacing.four}
-          paddingTop={Spacing.three}
-          $compact={{ gap: Spacing.four, paddingHorizontal: Spacing.three }}>
-          <Collapsible title="File-based routing">
-            <ThemedText type="small">
-              This app has two screens: <ThemedText type="code">src/app/index.tsx</ThemedText> and{' '}
-              <ThemedText type="code">src/app/explore.tsx</ThemedText>
+    <ThemedView flex={1}>
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView
+          flex={1}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={{
+            width: '100%',
+            maxWidth: MaxContentWidth,
+            alignSelf: 'center',
+            gap: Spacing.five,
+            paddingHorizontal: media.wide ? Spacing.five : Spacing.three,
+            paddingTop: media.short ? Spacing.three : Spacing.four,
+            paddingBottom: (hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four,
+          }}>
+          <YStack gap={Spacing.one}>
+            <ThemedText type="eyebrow" themeColor="accent">
+              Made for your queue
             </ThemedText>
-            <ThemedText type="small">
-              The layout file in <ThemedText type="code">src/app/_layout.tsx</ThemedText> sets up
-              the tab navigator.
+            <ThemedText type="title" $compact={{ fontSize: 36, lineHeight: 42 }}>
+              Discover
             </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/router/introduction">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+            <ThemedText themeColor="textSecondary">
+              Pick up where you left off and rediscover what you saved.
+            </ThemedText>
+          </YStack>
 
-          <Collapsible title="Android, iOS, and web support">
-            <ThemedView type="backgroundElement" alignItems="center">
-              <ThemedText type="small">
-                You can open this project on Android, iOS, and the web. To open the web version,
-                press <ThemedText type="smallBold">w</ThemedText> in the terminal running this
-                project.
+          <ThemedView
+            type="accentSubtle"
+            overflow="hidden"
+            gap={Spacing.four}
+            padding={Spacing.five}
+            borderWidth={1}
+            borderColor="$accent"
+            borderRadius={Radius.large}
+            $compact={{ padding: Spacing.four }}>
+            <View
+              position="absolute"
+              top={-80}
+              right={-70}
+              width={210}
+              height={210}
+              borderRadius={210}
+              backgroundColor="$accent"
+              opacity={0.12}
+            />
+            <View
+              position="absolute"
+              right={50}
+              bottom={-90}
+              width={180}
+              height={180}
+              borderRadius={180}
+              backgroundColor="$accent"
+              opacity={0.08}
+            />
+            <YStack maxWidth={560} gap={Spacing.two}>
+              <ThemedText type="eyebrow" themeColor="accent">
+                Private by design
               </ThemedText>
-              <Image
-                source={require('@/assets/images/tutorial-web.png')}
-                style={imageStyles.tutorial}
+              <ThemedText type="subtitle" $compact={{ fontSize: 27, lineHeight: 33 }}>
+                Your audio, your pace, your device.
+              </ThemedText>
+              <ThemedText themeColor="textSecondary">
+                Offline listening, reliable resume progress, and no account between you and your
+                next episode.
+              </ThemedText>
+            </YStack>
+            <AppButton
+              alignSelf="flex-start"
+              accessibilityLabel="Open audio library"
+              onPress={() => router.navigate('/')}>
+              <ThemedText type="smallBold" color="$accentForeground">
+                Open library
+              </ThemedText>
+              <SymbolView name={ARROW_ICON} size={17} tintColor={theme.accentForeground} />
+            </AppButton>
+          </ThemedView>
+
+          <YStack gap={Spacing.three}>
+            <SectionHeading
+              title="Continue listening"
+              subtitle="Jump back in without losing your place."
+            />
+            {activeItem ? (
+              <EpisodeResultRow
+                item={activeItem}
+                isActive={playback.activeItemId === activeItem.id}
+                isPlaying={playback.activeItemId === activeItem.id && playback.isPlaying}
+                isTransitioning={playback.isTransitioning}
+                isPlaybackReady={playback.isReady}
+                onTogglePlayback={playback.togglePlayback}
               />
-            </ThemedView>
-          </Collapsible>
+            ) : (
+              <EmptyDiscoverCard onOpenLibrary={() => router.navigate('/')} />
+            )}
+          </YStack>
 
-          <Collapsible title="Images">
-            <ThemedText type="small">
-              For static images, you can use the <ThemedText type="code">@2x</ThemedText> and{' '}
-              <ThemedText type="code">@3x</ThemedText> suffixes to provide files for different
-              screen densities.
-            </ThemedText>
-            <Image source={require('@/assets/images/react-logo.png')} style={imageStyles.react} />
-            <ExternalLink href="https://reactnative.dev/docs/images">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+          <YStack gap={Spacing.three}>
+            <SectionHeading
+              title="Listening essentials"
+              subtitle="The features that travel with every episode."
+            />
+            <XStack flexWrap="wrap" gap={Spacing.three}>
+              <FeatureCard
+                icon={DOWNLOAD_ICON}
+                title="Offline ready"
+                description="Imported episodes are copied into private app storage."
+                tintColor={theme.success}
+              />
+              <FeatureCard
+                icon={QUEUE_ICON}
+                title="Your queue"
+                description="Library order is saved, including every drag-and-drop change."
+                tintColor={theme.accent}
+              />
+              <FeatureCard
+                icon={BACKGROUND_ICON}
+                title="Keep listening"
+                description="Playback continues in the background and on the lock screen."
+                tintColor={theme.warning}
+              />
+            </XStack>
+          </YStack>
 
-          <Collapsible title="Light and dark mode components">
-            <ThemedText type="small">
-              This template has light and dark mode support. The{' '}
-              <ThemedText type="code">useColorScheme()</ThemedText> hook lets you inspect what the
-              user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+          {recentItems.length > 0 && (
+            <YStack gap={Spacing.three}>
+              <SectionHeading title="Recently added" subtitle="Fresh arrivals in your library." />
+              {recentItems.map((item) => {
+                const isActive = playback.activeItemId === item.id;
 
-          <Collapsible title="Animations">
-            <ThemedText type="small">
-              This template includes an example of an animated component. The{' '}
-              <ThemedText type="code">src/components/ui/collapsible.tsx</ThemedText> component uses
-              the powerful <ThemedText type="code">react-native-reanimated</ThemedText> library to
-              animate opening this hint.
-            </ThemedText>
-          </Collapsible>
-        </YStack>
-        {Platform.OS === 'web' && <WebBadge />}
-      </ThemedView>
-    </ScrollView>
+                return (
+                  <EpisodeResultRow
+                    key={item.id}
+                    item={item}
+                    isActive={isActive}
+                    isPlaying={isActive && playback.isPlaying}
+                    isTransitioning={playback.isTransitioning}
+                    isPlaybackReady={playback.isReady}
+                    onTogglePlayback={playback.togglePlayback}
+                  />
+                );
+              })}
+            </YStack>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    </ThemedView>
   );
 }
 
-const contentStyles = {
-  container: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-} as const;
+function SectionHeading({ subtitle, title }: { subtitle: string; title: string }) {
+  return (
+    <YStack gap={Spacing.one}>
+      <ThemedText type="heading">{title}</ThemedText>
+      <ThemedText type="metadata" themeColor="textSecondary">
+        {subtitle}
+      </ThemedText>
+    </YStack>
+  );
+}
 
-const imageStyles = {
-  tutorial: {
-    width: '100%',
-    aspectRatio: 296 / 171,
-    borderRadius: Spacing.three,
-    marginTop: Spacing.two,
-  },
-  react: {
-    width: 100,
-    height: 100,
-    alignSelf: 'center',
-  },
-} as const;
+function FeatureCard({
+  description,
+  icon,
+  tintColor,
+  title,
+}: {
+  description: string;
+  icon: SymbolViewProps['name'];
+  tintColor: string;
+  title: string;
+}) {
+  return (
+    <ThemedView
+      type="backgroundElement"
+      minWidth={210}
+      flex={1}
+      gap={Spacing.three}
+      padding={Spacing.four}
+      borderWidth={1}
+      borderColor="$borderColor"
+      borderRadius={Radius.large}>
+      <View
+        width={46}
+        height={46}
+        alignItems="center"
+        justifyContent="center"
+        borderRadius={15}
+        backgroundColor="$backgroundSelected">
+        <SymbolView name={icon} size={23} tintColor={tintColor} />
+      </View>
+      <YStack gap={Spacing.one}>
+        <ThemedText type="episodeTitle">{title}</ThemedText>
+        <ThemedText type="metadata" themeColor="textSecondary">
+          {description}
+        </ThemedText>
+      </YStack>
+    </ThemedView>
+  );
+}
+
+function EmptyDiscoverCard({ onOpenLibrary }: { onOpenLibrary: () => void }) {
+  return (
+    <ThemedView
+      type="backgroundElement"
+      alignItems="center"
+      gap={Spacing.two}
+      padding={Spacing.four}
+      borderWidth={1}
+      borderColor="$borderColor"
+      borderRadius={Radius.large}>
+      <ThemedText type="episodeTitle" textAlign="center">
+        Your next episode starts in Library
+      </ThemedText>
+      <ThemedText type="metadata" themeColor="textSecondary" textAlign="center">
+        Add a local audio file to start listening offline.
+      </ThemedText>
+      <AppButton tone="secondary" onPress={onOpenLibrary}>
+        <ThemedText type="smallBold">Go to Library</ThemedText>
+      </AppButton>
+    </ThemedView>
+  );
+}
+
+const ARROW_ICON: SymbolViewProps['name'] = {
+  ios: 'arrow.right',
+  android: 'arrow_forward',
+  web: 'arrow_forward',
+};
+const DOWNLOAD_ICON: SymbolViewProps['name'] = {
+  ios: 'arrow.down.circle.fill',
+  android: 'download_for_offline',
+  web: 'download_for_offline',
+};
+const QUEUE_ICON: SymbolViewProps['name'] = {
+  ios: 'text.line.first.and.arrowtriangle.forward',
+  android: 'queue_music',
+  web: 'queue_music',
+};
+const BACKGROUND_ICON: SymbolViewProps['name'] = {
+  ios: 'lock.open.rotation',
+  android: 'screen_lock_portrait',
+  web: 'screen_lock_portrait',
+};
+
+const styles = StyleSheet.create({
+  safeArea: { flex: 1 },
+});

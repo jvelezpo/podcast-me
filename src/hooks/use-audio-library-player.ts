@@ -34,6 +34,7 @@ export function useAudioLibraryPlayer(
   const status = useAudioPlayerStatus(player);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [playbackRate, setPlaybackRateState] = useState(1);
   const [playbackError, setPlaybackError] = useState<AudioPlaybackError | null>(null);
   const activeItemRef = useRef<LoadedAudioItem | null>(null);
   const statusRef = useRef(status);
@@ -43,6 +44,7 @@ export function useAudioLibraryPlayer(
   const lastCheckpoint = useRef<{ itemId: string; savedAt: number } | null>(null);
   const audioModePromise = useRef<Promise<void> | null>(null);
   const playbackRequested = useRef(false);
+  const playbackRateRef = useRef(1);
 
   const finishTransition = useCallback(() => {
     transitionInProgress.current = false;
@@ -246,6 +248,7 @@ export function useAudioLibraryPlayer(
         }
 
         lastCheckpoint.current = { itemId: item.id, savedAt: Date.now() };
+        player.setPlaybackRate(playbackRateRef.current);
         activateLockScreenControls(item);
         player.play();
         finishTransition();
@@ -332,6 +335,20 @@ export function useAudioLibraryPlayer(
       }
     },
     [seekTo]
+  );
+
+  const setPlaybackRate = useCallback(
+    (rate: number): void => {
+      if (!Number.isFinite(rate)) {
+        return;
+      }
+
+      const safeRate = Math.min(Math.max(rate, 0.5), 2);
+      playbackRateRef.current = safeRate;
+      player.setPlaybackRate(safeRate);
+      setPlaybackRateState(safeRate);
+    },
+    [player]
   );
 
   useEffect(() => {
@@ -511,6 +528,7 @@ export function useAudioLibraryPlayer(
           return;
         }
 
+        player.setPlaybackRate(playbackRateRef.current);
         activateLockScreenControls(pending.item);
         player.play();
 
@@ -643,6 +661,7 @@ export function useAudioLibraryPlayer(
     const duration = finitePositive(status.duration);
     void updateAudioItem(activeItem.id, {
       lastPositionSeconds: 0,
+      isPlayed: true,
       ...(duration === null ? {} : { durationSeconds: duration }),
     });
   }, [finishTransition, player, status.didJustFinish, status.duration, updateAudioItem]);
@@ -678,9 +697,11 @@ export function useAudioLibraryPlayer(
     isReady: isLibraryReady,
     isTransitioning,
     playbackError,
+    playbackRate,
     removeActiveItem,
     seekBy,
     seekTo,
+    setPlaybackRate,
     togglePlayback,
   };
 }

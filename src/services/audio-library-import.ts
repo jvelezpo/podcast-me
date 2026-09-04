@@ -86,6 +86,7 @@ export async function pickAndCopyAudioFiles(
         contentFingerprint,
         durationSeconds: null,
         lastPositionSeconds: 0,
+        isPlayed: false,
         addedAt: timestamp,
         updatedAt: timestamp,
       });

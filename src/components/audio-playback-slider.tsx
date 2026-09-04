@@ -10,6 +10,7 @@ import { Slider, View, XStack, YStack } from 'tamagui';
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { formatPlaybackTime } from '@/utils/audio-display';
 
 type AudioPlaybackSliderProps = {
   accessibilityLabel: string;
@@ -210,22 +211,27 @@ export function AudioPlaybackSlider({
           max={durationSeconds ?? 1}
           step={0.01}
           value={[displayPosition]}>
-          <Slider.Track height={6} borderRadius={3} backgroundColor="$background">
-            <Slider.TrackActive borderRadius={3} backgroundColor="$color" />
+          <Slider.Track height={7} borderRadius={4} backgroundColor="$backgroundSelected">
+            <Slider.TrackActive borderRadius={4} backgroundColor="$accent" />
           </Slider.Track>
           <Slider.Thumb
             index={0}
-            width={20}
-            height={20}
+            width={22}
+            height={22}
             borderWidth={0}
-            borderRadius={10}
-            backgroundColor="$color"
+            borderRadius={11}
+            backgroundColor="$accent"
           />
         </Slider>
       </View>
 
-      <XStack justifyContent="space-between">
+      <XStack justifyContent="space-between" alignItems="center">
         <ThemedText type="smallBold">{formatPlaybackTime(displayPosition)}</ThemedText>
+        <ThemedText type="metadata" themeColor="textSecondary">
+          {durationSeconds === null
+            ? '--:-- remaining'
+            : `−${formatPlaybackTime(Math.max(0, durationSeconds - displayPosition))}`}
+        </ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
           {formatPlaybackTime(durationSeconds)}
         </ThemedText>
@@ -353,23 +359,4 @@ function clampPosition(positionSeconds: number, durationSeconds: number | null):
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
-}
-
-function formatPlaybackTime(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) {
-    return '--:--';
-  }
-
-  const totalSeconds = Math.floor(seconds);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const remainingSeconds = totalSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, '0')}:${remainingSeconds
-      .toString()
-      .padStart(2, '0')}`;
-  }
-
-  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 }

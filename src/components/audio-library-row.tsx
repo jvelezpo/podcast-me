@@ -1,18 +1,22 @@
+import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Animated,
-  PanResponder,
-  type AccessibilityActionEvent,
-} from 'react-native';
+import { Animated, PanResponder, type AccessibilityActionEvent } from 'react-native';
 import { View, XStack, YStack, styled } from 'tamagui';
 
-import { AudioPlaybackSlider } from '@/components/audio-playback-slider';
+import { EpisodeArtwork } from '@/components/episode-artwork';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { AppButton } from '@/components/ui/app-button';
-import { Spacing } from '@/constants/theme';
+import { Radius, Spacing } from '@/constants/theme';
 import type { AudioPlaybackError } from '@/hooks/use-audio-library-player';
+import { useTheme } from '@/hooks/use-theme';
 import type { LoadedAudioItem } from '@/services/audio-library-storage';
+import {
+  formatEpisodeDate,
+  formatFileSize,
+  formatPlaybackTime,
+  getEpisodeTitle,
+} from '@/utils/audio-display';
 
 type AudioLibraryRowProps = {
   item: LoadedAudioItem;
@@ -28,8 +32,6 @@ type AudioLibraryRowProps = {
   isReorderDisabled: boolean;
   onDelete: (item: LoadedAudioItem) => void;
   onReorder: (itemId: string, offset: number) => void;
-  onSeekBy: (seconds: number) => void;
-  onSeekTo: (positionSeconds: number) => void;
   onTogglePlayback: (item: LoadedAudioItem) => void;
 };
 
@@ -47,16 +49,16 @@ export function AudioLibraryRow({
   isReorderDisabled,
   onDelete,
   onReorder,
-  onSeekBy,
-  onSeekTo,
   onTogglePlayback,
 }: AudioLibraryRowProps) {
+  const theme = useTheme();
   const [dragY] = useState(() => new Animated.Value(0));
   const [highlightProgress] = useState(() => new Animated.Value(0));
+  const [isDragging, setIsDragging] = useState(false);
+  const [showActions, setShowActions] = useState(false);
   const dragDisabledRef = useRef(isReorderDisabled);
   const itemIdRef = useRef(item.id);
   const onReorderRef = useRef(onReorder);
-  const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
     dragDisabledRef.current = isReorderDisabled;
@@ -72,36 +74,18 @@ export function AudioLibraryRow({
     highlightProgress.stopAnimation();
     highlightProgress.setValue(0);
     const animation = Animated.sequence([
-      Animated.timing(highlightProgress, {
-        duration: 180,
-        toValue: 1,
-        useNativeDriver: true,
-      }),
-      Animated.timing(highlightProgress, {
-        duration: 260,
-        toValue: 0,
-        useNativeDriver: true,
-      }),
-      Animated.timing(highlightProgress, {
-        duration: 180,
-        toValue: 1,
-        useNativeDriver: true,
-      }),
-      Animated.timing(highlightProgress, {
-        duration: 340,
-        toValue: 0,
-        useNativeDriver: true,
-      }),
+      Animated.timing(highlightProgress, { duration: 180, toValue: 1, useNativeDriver: true }),
+      Animated.timing(highlightProgress, { duration: 260, toValue: 0, useNativeDriver: true }),
+      Animated.timing(highlightProgress, { duration: 180, toValue: 1, useNativeDriver: true }),
+      Animated.timing(highlightProgress, { duration: 340, toValue: 0, useNativeDriver: true }),
     ]);
     animation.start();
 
     return () => animation.stop();
   }, [duplicateHighlightToken, highlightProgress]);
 
-  // The handle owns one stable responder so list/status rerenders cannot interrupt a drag.
   const reorderResponder = useMemo(() => {
     const canDrag = () => !dragDisabledRef.current;
-
     const finishDrag = (_event: unknown, gestureState: { dy: number }) => {
       const offset = Math.round(gestureState.dy / REORDER_STEP_DISTANCE);
       setIsDragging(false);
@@ -133,9 +117,7 @@ export function AudioLibraryRow({
         dragY.setValue(0);
         setIsDragging(true);
       },
-      onPanResponderMove: (_event, gestureState) => {
-        dragY.setValue(gestureState.dy);
-      },
+      onPanResponderMove: (_event, gestureState) => dragY.setValue(gestureState.dy),
       onPanResponderRelease: finishDrag,
       onPanResponderTerminate: finishDrag,
       onPanResponderTerminationRequest: () => false,
@@ -147,16 +129,13 @@ export function AudioLibraryRow({
   const durationSeconds = isActive
     ? loadedDurationSeconds ?? item.durationSeconds
     : item.durationSeconds;
+  const progress = durationSeconds
+    ? Math.min(Math.max(positionSeconds / durationSeconds, 0), 1)
+    : 0;
   const itemError = playbackError?.itemId === item.id ? playbackError.message : null;
   const isBusy = isActive && isTransitioning;
   const isButtonDisabled = !isPlaybackReady || !item.isAvailable || isTransitioning;
-  const buttonLabel = isBusy
-    ? 'Loading…'
-    : itemError
-      ? 'Retry'
-      : isActive && isPlaying
-        ? 'Pause'
-        : 'Play';
+  const title = getEpisodeTitle(item.originalName);
   const highlightScale = highlightProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [1, 1.018],
@@ -176,10 +155,10 @@ export function AudioLibraryRow({
 
   return (
     <AnimatedView
-      borderRadius={Spacing.three}
+      borderRadius={Radius.large}
       zIndex={isDragging ? 10 : 0}
-      opacity={isDragging ? 0.92 : 1}
-      boxShadow={isDragging ? '0 8px 18px rgba(0, 0, 0, 0.2)' : undefined}
+      opacity={isDragging ? 0.94 : 1}
+      boxShadow={isDragging ? '0 14px 28px rgba(0,0,0,0.28)' : undefined}
       style={{ transform: [{ translateY: dragY }, { scale: highlightScale }] }}>
       <AnimatedView
         pointerEvents="none"
@@ -190,147 +169,183 @@ export function AudioLibraryRow({
         left={0}
         zIndex={2}
         borderWidth={3}
-        borderRadius={Spacing.three}
-        borderColor="$color"
+        borderRadius={Radius.large}
+        borderColor="$accent"
         style={{ opacity: highlightProgress }}
       />
       <ThemedView
-        type={isActive ? 'backgroundSelected' : 'backgroundElement'}
-        padding={Spacing.three}
-        borderRadius={Spacing.three}
-        gap={Spacing.two}
-        $compact={{ padding: Spacing.two }}>
-        <XStack alignItems="center" gap={Spacing.three}>
-          <YStack flex={1} gap={Spacing.one}>
-            <ThemedText type="smallBold" numberOfLines={2}>
-              {item.originalName}
+        type="backgroundElement"
+        overflow="hidden"
+        borderWidth={1}
+        borderColor={isActive ? '$accent' : '$borderColor'}
+        borderRadius={Radius.large}
+        boxShadow="0 8px 24px rgba(0,0,0,0.12)">
+        <XStack alignItems="center" gap={Spacing.three} padding={Spacing.three}>
+          <EpisodeArtwork itemId={item.id} name={item.originalName} size={76} />
+
+          <YStack flex={1} minWidth={0} gap={Spacing.one}>
+            <ThemedText type="episodeTitle" numberOfLines={2}>
+              {title}
             </ThemedText>
+            <ThemedText type="metadata" themeColor="textSecondary" numberOfLines={1}>
+              Podcast Me · {formatEpisodeDate(item.addedAt)}
+            </ThemedText>
+            <ThemedText type="metadata" themeColor="textSecondary" numberOfLines={1}>
+              {formatFileSize(item.sizeBytes)} · Saved offline
+            </ThemedText>
+            <XStack alignItems="center" gap={Spacing.one}>
+              <View
+                width={7}
+                height={7}
+                borderRadius={7}
+                backgroundColor={item.isPlayed ? '$success' : isActive ? '$accent' : '$warning'}
+              />
+              <ThemedText
+                type="metadata"
+                color={item.isPlayed ? '$success' : isActive ? '$accent' : '$colorMuted'}>
+                {item.isPlayed
+                  ? 'Played'
+                  : isActive
+                    ? isPlaying
+                      ? 'Playing'
+                      : 'In progress'
+                    : progress > 0
+                      ? 'In progress'
+                      : 'Unplayed'}
+              </ThemedText>
+            </XStack>
           </YStack>
 
-          <AppButton
-            tone="outlined"
-            accessibilityRole="button"
-            accessibilityLabel={`${buttonLabel} ${item.originalName}`}
-            accessibilityState={{ busy: isBusy, disabled: isButtonDisabled }}
-            disabled={isButtonDisabled}
-            onPress={() => onTogglePlayback(item)}
-            minWidth={76}>
-            <ThemedText type="smallBold">{buttonLabel}</ThemedText>
-          </AppButton>
+          <YStack flexShrink={0} alignItems="center" gap={Spacing.two}>
+            <ThemedText type="metadata" themeColor="textSecondary">
+              {formatPlaybackTime(durationSeconds)}
+            </ThemedText>
+            <AppButton
+              tone="icon"
+              accessibilityLabel={`${isBusy ? 'Loading' : isActive && isPlaying ? 'Pause' : itemError ? 'Retry' : 'Play'} ${title}`}
+              accessibilityState={{ busy: isBusy, disabled: isButtonDisabled }}
+              disabled={isButtonDisabled}
+              onPress={() => onTogglePlayback(item)}
+              backgroundColor="$accent">
+              <SymbolView
+                name={isActive && isPlaying ? PAUSE_ICON : PLAY_ICON}
+                size={22}
+                tintColor={theme.accentForeground}
+                weight="bold"
+              />
+            </AppButton>
+            <AppButton
+              tone="ghost"
+              minHeight={32}
+              accessibilityLabel={`${showActions ? 'Hide' : 'Show'} options for ${title}`}
+              onPress={() => setShowActions((visible) => !visible)}>
+              <SymbolView name={MORE_ICON} size={20} tintColor={theme.textSecondary} />
+            </AppButton>
+          </YStack>
         </XStack>
 
-        <AudioPlaybackSlider
-          accessibilityLabel={`${item.originalName} playback position`}
-          disabled={!isActive || isButtonDisabled || durationSeconds === null}
-          durationSeconds={durationSeconds}
-          onSeekTo={onSeekTo}
-          positionSeconds={positionSeconds}
-        />
+        {(isActive || progress > 0) && durationSeconds !== null && (
+          <View height={3} backgroundColor="$backgroundSelected">
+            <View height="100%" width={`${progress * 100}%`} backgroundColor="$accent" />
+          </View>
+        )}
 
-        {isActive && (
-          <XStack gap={Spacing.two} $compact={{ flexDirection: 'column' }}>
-            <SeekButton
-              accessibilityLabel={`Rewind ${item.originalName} by 15 seconds`}
-              disabled={isButtonDisabled}
-              label="−15 sec"
-              onPress={() => onSeekBy(-15)}
-            />
-            <SeekButton
-              accessibilityLabel={`Move ${item.originalName} forward by 15 seconds`}
-              disabled={isButtonDisabled}
-              label="+15 sec"
-              onPress={() => onSeekBy(15)}
-            />
+        {(itemError || !item.isAvailable) && (
+          <YStack gap={Spacing.one} paddingHorizontal={Spacing.three} paddingBottom={Spacing.three}>
+            {itemError && (
+              <ThemedText type="metadata" color="$danger">
+                {itemError}
+              </ThemedText>
+            )}
+            {!item.isAvailable && (
+              <ThemedText type="metadata" color="$warning">
+                {item.unavailableReason === 'unsupported'
+                  ? 'Unsupported audio type. Re-import a supported recording.'
+                  : 'File missing. Re-import this recording to restore playback.'}
+              </ThemedText>
+            )}
+          </YStack>
+        )}
+
+        {showActions && (
+          <XStack
+            gap={Spacing.two}
+            paddingHorizontal={Spacing.three}
+            paddingBottom={Spacing.three}
+            $compact={{ flexDirection: 'column' }}>
+            <View
+              {...reorderResponder.panHandlers}
+              accessible
+              accessibilityActions={[
+                { name: 'decrement', label: 'Move earlier' },
+                { name: 'increment', label: 'Move later' },
+              ]}
+              accessibilityHint="Drag vertically to change the playlist position"
+              accessibilityLabel={`Reorder ${title}`}
+              accessibilityRole="adjustable"
+              accessibilityState={{ disabled: isReorderDisabled }}
+              onAccessibilityAction={handleReorderAccessibilityAction}
+              minHeight={44}
+              flex={1}
+              flexDirection="row"
+              alignItems="center"
+              justifyContent="center"
+              gap={Spacing.two}
+              borderWidth={1}
+              borderRadius={Radius.round}
+              borderColor="$borderColor"
+              backgroundColor={isDragging ? '$backgroundSelected' : 'transparent'}
+              opacity={isReorderDisabled ? 0.45 : 1}
+              cursor={isReorderDisabled ? 'not-allowed' : 'grab'}>
+              <SymbolView name={REORDER_ICON} size={18} tintColor={theme.text} />
+              <ThemedText type="smallBold">Drag to reorder</ThemedText>
+            </View>
+
+            <AppButton
+              tone="danger"
+              accessibilityLabel={`Remove ${title}`}
+              accessibilityState={{ disabled: isDeleteDisabled }}
+              disabled={isDeleteDisabled}
+              onPress={() => onDelete(item)}>
+              <SymbolView name={DELETE_ICON} size={17} tintColor={theme.danger} />
+              <ThemedText type="smallBold" color="$danger">
+                Remove
+              </ThemedText>
+            </AppButton>
           </XStack>
         )}
-
-        {isActive && !itemError && (
-          <ThemedText type="small" themeColor="textSecondary">
-            {isBusy ? 'Preparing playback…' : isPlaying ? 'Now playing' : 'Paused'}
-          </ThemedText>
-        )}
-
-        {!item.isAvailable && (
-          <ThemedText type="smallBold">
-            {item.unavailableReason === 'unsupported'
-              ? 'Unsupported audio type. Re-import a supported recording.'
-              : 'File missing. Re-import this recording to restore playback.'}
-          </ThemedText>
-        )}
-
-        {itemError && <ThemedText type="smallBold">{itemError}</ThemedText>}
-
-        <XStack gap={Spacing.two} $compact={{ flexDirection: 'column' }}>
-          <View
-            {...reorderResponder.panHandlers}
-            accessible
-            accessibilityActions={[
-              { name: 'decrement', label: 'Move earlier' },
-              { name: 'increment', label: 'Move later' },
-            ]}
-            accessibilityHint="Drag vertically to change the playlist position"
-            accessibilityLabel={`Reorder ${item.originalName}`}
-            accessibilityRole="adjustable"
-            accessibilityState={{ disabled: isReorderDisabled }}
-            onAccessibilityAction={handleReorderAccessibilityAction}
-            minHeight={44}
-            flex={1}
-            flexDirection="row"
-            alignItems="center"
-            justifyContent="center"
-            gap={Spacing.two}
-            borderWidth={1}
-            borderRadius={Spacing.three}
-            borderColor="$borderColor"
-            backgroundColor={isDragging ? '$backgroundSelected' : 'transparent'}
-            opacity={isReorderDisabled ? 0.45 : 1}
-            cursor={isReorderDisabled ? 'not-allowed' : 'grab'}>
-            <ThemedText type="smallBold" fontSize={22} lineHeight={22}>
-              ≡
-            </ThemedText>
-            <ThemedText type="smallBold">Drag to reorder</ThemedText>
-          </View>
-
-          <AppButton
-            tone="danger"
-            accessibilityRole="button"
-            accessibilityLabel={`Remove ${item.originalName}`}
-            accessibilityState={{ disabled: isDeleteDisabled }}
-            disabled={isDeleteDisabled}
-            onPress={() => onDelete(item)}>
-            <ThemedText type="smallBold" color="$danger">
-              Remove
-            </ThemedText>
-          </AppButton>
-        </XStack>
       </ThemedView>
     </AnimatedView>
   );
 }
 
-type SeekButtonProps = {
-  accessibilityLabel: string;
-  disabled: boolean;
-  label: string;
-  onPress: () => void;
+const REORDER_STEP_DISTANCE = 124;
+
+const PLAY_ICON: SymbolViewProps['name'] = {
+  ios: 'play.fill',
+  android: 'play_arrow',
+  web: 'play_arrow',
 };
-
-function SeekButton({ accessibilityLabel, disabled, label, onPress }: SeekButtonProps) {
-  return (
-    <AppButton
-      tone="outlined"
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      flex={1}>
-      <ThemedText type="smallBold">{label}</ThemedText>
-    </AppButton>
-  );
-}
-
-const REORDER_STEP_DISTANCE = 112;
+const PAUSE_ICON: SymbolViewProps['name'] = {
+  ios: 'pause.fill',
+  android: 'pause',
+  web: 'pause',
+};
+const MORE_ICON: SymbolViewProps['name'] = {
+  ios: 'ellipsis',
+  android: 'more_horiz',
+  web: 'more_horiz',
+};
+const REORDER_ICON: SymbolViewProps['name'] = {
+  ios: 'line.3.horizontal',
+  android: 'drag_handle',
+  web: 'drag_handle',
+};
+const DELETE_ICON: SymbolViewProps['name'] = {
+  ios: 'trash',
+  android: 'delete_outline',
+  web: 'delete_outline',
+};
 
 const AnimatedView = styled(Animated.View, {
   name: 'AnimatedView',

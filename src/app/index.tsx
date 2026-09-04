@@ -1,10 +1,6 @@
+import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 import { useEffect, useRef, useState } from 'react';
-import {
-  Alert,
-  FlatList,
-  Platform,
-  StyleSheet,
-} from 'react-native';
+import { Alert, FlatList, Platform, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui';
 
@@ -12,15 +8,22 @@ import { AudioLibraryRow } from '@/components/audio-library-row';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { AppButton } from '@/components/ui/app-button';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { useAudioLibrary } from '@/hooks/use-audio-library';
-import { useAudioLibraryPlayer } from '@/hooks/use-audio-library-player';
+import {
+  BottomPlayerInset,
+  BottomTabInset,
+  MaxContentWidth,
+  Radius,
+  Spacing,
+} from '@/constants/theme';
+import { useAudioLibraryContext } from '@/contexts/audio-library-context';
+import { useTheme } from '@/hooks/use-theme';
 import type { LoadedAudioItem } from '@/services/audio-library-storage';
+import { formatPlaybackTime } from '@/utils/audio-display';
 
 export default function HomeScreen() {
-  const library = useAudioLibrary();
-  const playback = useAudioLibraryPlayer(library.updateAudioItem, !library.isLoading);
+  const { library, playback } = useAudioLibraryContext();
   const media = useMedia();
+  const theme = useTheme();
   const listRef = useRef<FlatList<LoadedAudioItem>>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -30,6 +33,11 @@ export default function HomeScreen() {
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(null);
   const [highlightToken, setHighlightToken] = useState(0);
   const isLibraryBusy = library.importPhase !== 'idle' || library.isMutating;
+  const hasPlayer = playback.activeItemId !== null;
+  const totalDuration = library.items.reduce(
+    (total, item) => total + (item.durationSeconds ?? 0),
+    0
+  );
   const contentContainerStyle = {
     flexGrow: 1,
     width: '100%' as const,
@@ -37,20 +45,14 @@ export default function HomeScreen() {
     alignSelf: 'center' as const,
     paddingHorizontal: media.wide ? Spacing.five : Spacing.three,
     paddingTop: media.short ? Spacing.three : Spacing.four,
-    paddingBottom: BottomTabInset + Spacing.four,
+    paddingBottom: (hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four,
   };
 
   useEffect(() => {
     return () => {
-      if (toastTimerRef.current) {
-        clearTimeout(toastTimerRef.current);
-      }
-      if (highlightTimerRef.current) {
-        clearTimeout(highlightTimerRef.current);
-      }
-      if (scrollRetryTimerRef.current) {
-        clearTimeout(scrollRetryTimerRef.current);
-      }
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      if (scrollRetryTimerRef.current) clearTimeout(scrollRetryTimerRef.current);
     };
   }, []);
 
@@ -81,11 +83,11 @@ export default function HomeScreen() {
       return;
     }
 
-    const duplicateLabel =
+    showToast(
       outcome.duplicateNames.length === 1
         ? `${outcome.duplicateNames[0]} is already in the playlist.`
-        : `${outcome.duplicateNames.length} selected files are already in the playlist.`;
-    showToast(duplicateLabel);
+        : `${outcome.duplicateNames.length} selected files are already in the playlist.`
+    );
     scrollRetryCountRef.current = 0;
 
     if (scrollRetryTimerRef.current) {
@@ -151,65 +153,69 @@ export default function HomeScreen() {
     );
   };
 
-  if (Platform.OS === 'web') {
-    return (
-      <ThemedView flex={1}>
-        <SafeAreaView style={nativeStyles.safeArea}>
-          <ThemedView
-            type="backgroundElement"
-            flex={1}
-            alignItems="center"
-            justifyContent="center"
-            gap={Spacing.three}
-            margin={Spacing.four}
-            padding={Spacing.four}
-            borderRadius={Spacing.four}>
-            <ThemedText type="title" textAlign="center" $compact={{ fontSize: 38 }}>
-              Audio library
-            </ThemedText>
-            <ThemedText textAlign="center" themeColor="textSecondary">
-              Local audio importing is available in the Android and iOS app.
-            </ThemedText>
-          </ThemedView>
-        </SafeAreaView>
-      </ThemedView>
-    );
-  }
-
   return (
     <ThemedView flex={1}>
-      <SafeAreaView style={nativeStyles.safeArea}>
+      <SafeAreaView style={styles.safeArea}>
         <FlatList
           ref={listRef}
           data={library.items}
           keyExtractor={(item) => item.id}
-          style={nativeStyles.list}
+          style={styles.list}
           contentContainerStyle={contentContainerStyle}
           ItemSeparatorComponent={() => <View height={Spacing.three} />}
           ListHeaderComponent={
-            <YStack gap={Spacing.three} marginBottom={Spacing.four}>
+            <YStack gap={Spacing.four} marginBottom={Spacing.four}>
               <XStack
-                alignItems="center"
+                alignItems="flex-end"
                 justifyContent="space-between"
                 gap={Spacing.three}
                 $compact={{ flexDirection: 'column', alignItems: 'stretch' }}>
                 <YStack flex={1} gap={Spacing.one}>
-                  <ThemedText type="title" $compact={{ fontSize: 38, lineHeight: 44 }}>
-                    Audio library
+                  <ThemedText type="eyebrow" themeColor="accent">
+                    Your collection
+                  </ThemedText>
+                  <ThemedText type="title" $compact={{ fontSize: 36, lineHeight: 42 }}>
+                    Library
                   </ThemedText>
                   <ThemedText themeColor="textSecondary">
-                    Your recordings stay on this device.
+                    Everything you save stays private on this device.
                   </ThemedText>
                 </YStack>
 
-                {!library.isLoading && library.items.length > 0 && (
+                {Platform.OS !== 'web' && !library.isLoading && (
                   <AddAudioButton
                     disabled={isLibraryBusy}
                     importPhase={library.importPhase}
                     onPress={() => void handleAddAudio()}
+                    tintColor={theme.accentForeground}
                   />
                 )}
               </XStack>
+
+              {!library.isLoading && library.items.length > 0 && (
+                <XStack flexWrap="wrap" gap={Spacing.two}>
+                  <StatChip value={`${library.items.length}`} label="Episodes" />
+                  <StatChip
+                    value={`${library.items.filter((item) => !item.isPlayed).length}`}
+                    label="Unplayed"
+                  />
+                  <StatChip value={formatPlaybackTime(totalDuration)} label="Total time" />
+                </XStack>
+              )}
+
+              {Platform.OS === 'web' && (
+                <ThemedView
+                  type="backgroundElement"
+                  padding={Spacing.three}
+                  borderRadius={Radius.medium}
+                  borderWidth={1}
+                  borderColor="$borderColor">
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Import new files from the Android or iOS app. Your existing library remains
+                    available here.
+                  </ThemedText>
+                </ThemedView>
+              )}
 
               {library.notice && (
                 <StatusNotice
@@ -227,9 +233,9 @@ export default function HomeScreen() {
 
               {library.importPhase === 'importing' && (
                 <XStack alignItems="center" gap={Spacing.two}>
-                  <Spinner size="small" color="$color" />
+                  <Spinner size="small" color="$accent" />
                   <ThemedText type="small" themeColor="textSecondary">
-                    Copying audio into the library…
+                    Copying audio into your library…
                   </ThemedText>
                 </XStack>
               )}
@@ -243,8 +249,8 @@ export default function HomeScreen() {
                 justifyContent="center"
                 gap={Spacing.three}
                 paddingVertical={Spacing.six}>
-                <Spinner color="$color" />
-                <ThemedText themeColor="textSecondary">Loading your audio library…</ThemedText>
+                <Spinner color="$accent" />
+                <ThemedText themeColor="textSecondary">Loading your library…</ThemedText>
               </ThemedView>
             ) : (
               <ThemedView
@@ -253,20 +259,38 @@ export default function HomeScreen() {
                 alignItems="center"
                 justifyContent="center"
                 gap={Spacing.three}
-                padding={Spacing.four}
-                borderRadius={Spacing.four}
-                $compact={{ padding: Spacing.three }}>
-                <ThemedText type="subtitle" textAlign="center" $compact={{ fontSize: 28 }}>
-                  Your library is empty
-                </ThemedText>
-                <ThemedText textAlign="center" themeColor="textSecondary">
-                  Choose audio files from your phone to keep and play them locally.
-                </ThemedText>
-                <AddAudioButton
-                  disabled={isLibraryBusy}
-                  importPhase={library.importPhase}
-                  onPress={() => void handleAddAudio()}
-                />
+                padding={Spacing.five}
+                borderWidth={1}
+                borderColor="$borderColor"
+                borderRadius={Radius.large}
+                boxShadow="0 12px 32px rgba(0,0,0,0.1)"
+                $compact={{ padding: Spacing.four }}>
+                <View
+                  width={64}
+                  height={64}
+                  alignItems="center"
+                  justifyContent="center"
+                  borderRadius={32}
+                  backgroundColor="$accentSubtle">
+                  <SymbolView name={LIBRARY_ICON} size={30} tintColor={theme.accent} />
+                </View>
+                <YStack alignItems="center" gap={Spacing.one}>
+                  <ThemedText type="heading" textAlign="center">
+                    Build your listening space
+                  </ThemedText>
+                  <ThemedText textAlign="center" themeColor="textSecondary" maxWidth={420}>
+                    Add audio from your phone and it will be ready offline, exactly where you left
+                    off.
+                  </ThemedText>
+                </YStack>
+                {Platform.OS !== 'web' && (
+                  <AddAudioButton
+                    disabled={isLibraryBusy}
+                    importPhase={library.importPhase}
+                    onPress={() => void handleAddAudio()}
+                    tintColor={theme.accentForeground}
+                  />
+                )}
               </ThemedView>
             )
           }
@@ -304,25 +328,19 @@ export default function HomeScreen() {
                 isTransitioning={playback.isTransitioning}
                 isPlaybackReady={playback.isReady}
                 currentPositionSeconds={playback.currentPositionSeconds}
-                duplicateHighlightToken={
-                  highlightedItemId === item.id ? highlightToken : 0
-                }
+                duplicateHighlightToken={highlightedItemId === item.id ? highlightToken : 0}
                 isDeleteDisabled={isLibraryBusy || playback.isTransitioning}
                 isReorderDisabled={isLibraryBusy || library.items.length < 2}
                 loadedDurationSeconds={playback.durationSeconds}
                 playbackError={playback.playbackError}
                 onDelete={confirmRemoveAudio}
-                onReorder={(itemId, offset) => {
-                  void library.reorderAudio(itemId, offset);
-                }}
-                onSeekBy={playback.seekBy}
-                onSeekTo={playback.seekTo}
+                onReorder={(itemId, offset) => void library.reorderAudio(itemId, offset)}
                 onTogglePlayback={playback.togglePlayback}
               />
             );
           }}
         />
-        {toastMessage && <ToastMessage message={toastMessage} />}
+        {toastMessage && <ToastMessage message={toastMessage} hasPlayer={hasPlayer} />}
       </SafeAreaView>
     </ThemedView>
   );
@@ -345,7 +363,27 @@ function findNextPlayableItem(
   );
 }
 
-function ToastMessage({ message }: { message: string }) {
+function StatChip({ label, value }: { label: string; value: string }) {
+  return (
+    <ThemedView
+      type="backgroundElement"
+      flexDirection="row"
+      alignItems="baseline"
+      gap={Spacing.one}
+      paddingHorizontal={Spacing.three}
+      paddingVertical={Spacing.two}
+      borderWidth={1}
+      borderColor="$borderColor"
+      borderRadius={Radius.round}>
+      <ThemedText type="smallBold">{value}</ThemedText>
+      <ThemedText type="metadata" themeColor="textSecondary">
+        {label}
+      </ThemedText>
+    </ThemedView>
+  );
+}
+
+function ToastMessage({ message, hasPlayer }: { message: string; hasPlayer: boolean }) {
   return (
     <ThemedView
       accessibilityLiveRegion="polite"
@@ -353,14 +391,16 @@ function ToastMessage({ message }: { message: string }) {
       type="backgroundSelected"
       position="absolute"
       right={Spacing.four}
-      bottom={BottomTabInset + Spacing.four}
+      bottom={(hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four}
       left={Spacing.four}
       maxWidth={560}
       alignSelf="center"
       paddingHorizontal={Spacing.four}
       paddingVertical={Spacing.three}
-      borderRadius={Spacing.three}
-      boxShadow="0 4px 10px rgba(0, 0, 0, 0.24)"
+      borderWidth={1}
+      borderColor="$borderColor"
+      borderRadius={Radius.medium}
+      boxShadow="0 10px 24px rgba(0,0,0,0.24)"
       $compact={{ right: Spacing.two, left: Spacing.two }}>
       <ThemedText type="smallBold" textAlign="center">
         {message}
@@ -373,9 +413,10 @@ type AddAudioButtonProps = {
   disabled: boolean;
   importPhase: 'idle' | 'picking' | 'importing';
   onPress: () => void;
+  tintColor: string;
 };
 
-function AddAudioButton({ disabled, importPhase, onPress }: AddAudioButtonProps) {
+function AddAudioButton({ disabled, importPhase, onPress, tintColor }: AddAudioButtonProps) {
   const label =
     importPhase === 'picking'
       ? 'Choosing…'
@@ -385,14 +426,16 @@ function AddAudioButton({ disabled, importPhase, onPress }: AddAudioButtonProps)
 
   return (
     <AppButton
-      accessibilityRole="button"
       accessibilityLabel="Add audio"
       accessibilityState={{ busy: importPhase !== 'idle', disabled }}
       disabled={disabled}
       onPress={onPress}
       borderWidth={0}
       $compact={{ width: '100%' }}>
-      <ThemedText type="smallBold">{label}</ThemedText>
+      <SymbolView name={ADD_ICON} size={18} tintColor={tintColor} weight="bold" />
+      <ThemedText type="smallBold" color="$accentForeground">
+        {label}
+      </ThemedText>
     </AppButton>
   );
 }
@@ -411,28 +454,33 @@ function StatusNotice({ title, message, onDismiss }: StatusNoticeProps) {
       alignItems="center"
       gap={Spacing.three}
       padding={Spacing.three}
-      borderRadius={Spacing.three}
+      borderRadius={Radius.medium}
       $compact={{ flexDirection: 'column', alignItems: 'stretch' }}>
       <YStack flex={1} gap={Spacing.one}>
         <ThemedText type="smallBold">{title}</ThemedText>
-        <ThemedText type="small">{message}</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          {message}
+        </ThemedText>
       </YStack>
-      <AppButton
-        tone="ghost"
-        accessibilityRole="button"
-        accessibilityLabel={`Dismiss ${title}`}
-        onPress={onDismiss}>
+      <AppButton tone="ghost" accessibilityLabel={`Dismiss ${title}`} onPress={onDismiss}>
         <ThemedText type="smallBold">Dismiss</ThemedText>
       </AppButton>
     </ThemedView>
   );
 }
 
-const nativeStyles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-  },
-  list: {
-    flex: 1,
-  },
+const ADD_ICON: SymbolViewProps['name'] = {
+  ios: 'plus',
+  android: 'add',
+  web: 'add',
+};
+const LIBRARY_ICON: SymbolViewProps['name'] = {
+  ios: 'headphones',
+  android: 'headphones',
+  web: 'headphones',
+};
+
+const styles = StyleSheet.create({
+  safeArea: { flex: 1 },
+  list: { flex: 1 },
 });

@@ -13,6 +13,8 @@ export type AudioItem = {
   durationSeconds: number | null;
   /** Resume position in seconds. */
   lastPositionSeconds: number;
+  /** Whether the listener has completed this audio at least once. */
+  isPlayed: boolean;
   /** ISO 8601 timestamp for when the item was imported. */
   addedAt: string;
   /** ISO 8601 timestamp for the item's most recent metadata change. */
