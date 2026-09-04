@@ -1,10 +1,11 @@
 import { SymbolView } from 'expo-symbols';
 import { PropsWithChildren, useState } from 'react';
-import { Pressable, StyleSheet } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
+import { styled } from 'tamagui';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { AppButton } from '@/components/ui/app-button';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
@@ -14,10 +15,19 @@ export function Collapsible({ children, title }: PropsWithChildren & { title: st
 
   return (
     <ThemedView>
-      <Pressable
-        style={({ pressed }) => [styles.heading, pressed && styles.pressedHeading]}
+      <AppButton
+        tone="ghost"
+        width="100%"
+        justifyContent="flex-start"
+        paddingHorizontal={0}
         onPress={() => setIsOpen((value) => !value)}>
-        <ThemedView type="backgroundElement" style={styles.button}>
+        <ThemedView
+          type="backgroundElement"
+          width={Spacing.four}
+          height={Spacing.four}
+          borderRadius={12}
+          alignItems="center"
+          justifyContent="center">
           <SymbolView
             name={{ ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }}
             size={14}
@@ -28,38 +38,24 @@ export function Collapsible({ children, title }: PropsWithChildren & { title: st
         </ThemedView>
 
         <ThemedText type="small">{title}</ThemedText>
-      </Pressable>
+      </AppButton>
       {isOpen && (
-        <Animated.View entering={FadeIn.duration(200)}>
-          <ThemedView type="backgroundElement" style={styles.content}>
+        <AnimatedView entering={FadeIn.duration(200)}>
+          <ThemedView
+            type="backgroundElement"
+            marginTop={Spacing.three}
+            marginLeft={Spacing.four}
+            padding={Spacing.four}
+            borderRadius={Spacing.three}
+            $compact={{ marginLeft: 0, padding: Spacing.three }}>
             {children}
           </ThemedView>
-        </Animated.View>
+        </AnimatedView>
       )}
     </ThemedView>
   );
 }
 
-const styles = StyleSheet.create({
-  heading: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-  },
-  pressedHeading: {
-    opacity: 0.7,
-  },
-  button: {
-    width: Spacing.four,
-    height: Spacing.four,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  content: {
-    marginTop: Spacing.three,
-    borderRadius: Spacing.three,
-    marginLeft: Spacing.four,
-    padding: Spacing.four,
-  },
+const AnimatedView = styled(Animated.View, {
+  name: 'CollapsibleAnimatedView',
 });

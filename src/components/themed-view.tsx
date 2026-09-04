@@ -1,16 +1,19 @@
-import { View, type ViewProps } from 'react-native';
+import { View, type GetProps } from 'tamagui';
 
 import { ThemeColor } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
 
-export type ThemedViewProps = ViewProps & {
-  lightColor?: string;
-  darkColor?: string;
+export type ThemedViewProps = GetProps<typeof View> & {
   type?: ThemeColor;
 };
 
-export function ThemedView({ style, lightColor, darkColor, type, ...otherProps }: ThemedViewProps) {
-  const theme = useTheme();
-
-  return <View style={[{ backgroundColor: theme[type ?? 'background'] }, style]} {...otherProps} />;
+export function ThemedView({ type, ...otherProps }: ThemedViewProps) {
+  return <View bg={themeColorTokens[type ?? 'background']} {...otherProps} />;
 }
+
+const themeColorTokens = {
+  background: '$background',
+  backgroundElement: '$backgroundElement',
+  backgroundSelected: '$backgroundSelected',
+  text: '$color',
+  textSecondary: '$colorMuted',
+} as const;

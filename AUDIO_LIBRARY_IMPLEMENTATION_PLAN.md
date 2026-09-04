@@ -55,7 +55,7 @@ These scenarios define the target behavior. Runtime verification is intentionall
 - [x] For each selected asset, create a `File` from its picker URI and copy it to a uniquely named `File` inside the persistent `audio-library` directory.
 - [x] Preserve the picker asset's original filename for display while saving only the new persistent URI for playback.
 - [x] Reject assets with an explicitly non-audio MIME type or files that cannot be copied, continue importing the remaining valid assets, and show one concise result message listing failures.
-- [x] Allow a user to re-import the same source as a separate library item; unique internal IDs and filenames must prevent the copies from overwriting one another.
+- [x] Fingerprint each app-owned copy and reject a byte-identical re-import. Delete the temporary duplicate copy, show a toast, scroll to the existing row, and pulse-highlight it; different audio files that share a display name remain valid.
 - [x] If file copying succeeds but the metadata save fails, delete only the new orphaned copy so the app does not accumulate invisible files.
 
 ## 6. Render the audio library
@@ -66,6 +66,9 @@ These scenarios define the target behavior. Runtime verification is intentionall
 - [x] Visually identify the active item and display its current position and progress without writing to storage on every render.
 - [x] Disable playback for missing or unsupported files and show an actionable message that the user can re-import the recording.
 - [x] Show loading, picker-open, importing, and playback-error states so repeated taps cannot start overlapping imports or player transitions.
+- [x] Confirm before removing an item, remove both its persisted metadata and app-owned file, and release an active source before deletion. If it was playing, continue with the next available item (falling back to an earlier available item) or report that no playable files remain.
+- [x] Provide a vertical drag handle for reordering, persist the resulting array order, and leave the shared native player's active source untouched while rows move.
+- [x] Configure Tamagui at the app root and use its themed primitives for app-owned text, surfaces, buttons, slider, collapsibles, rows, notices, and web tabs, with compact, wide, and short-screen adaptations. Keep native wrappers only where the platform API is required for navigation, lists, alerts, safe areas, gestures, or animation.
 
 ## 7. Implement one shared playback controller
 

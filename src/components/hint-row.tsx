@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { View, StyleSheet } from 'react-native';
+import { XStack } from 'tamagui';
 
 import { ThemedText } from './themed-text';
 import { ThemedView } from './themed-view';
@@ -13,23 +13,18 @@ type HintRowProps = {
 
 export function HintRow({ title = 'Try editing', hint = 'app/index.tsx' }: HintRowProps) {
   return (
-    <View style={styles.stepRow}>
+    <XStack
+      justifyContent="space-between"
+      gap={Spacing.two}
+      $compact={{ flexDirection: 'column' }}>
       <ThemedText type="small">{title}</ThemedText>
-      <ThemedView type="backgroundSelected" style={styles.codeSnippet}>
+      <ThemedView
+        type="backgroundSelected"
+        borderRadius={Spacing.two}
+        paddingVertical={Spacing.half}
+        paddingHorizontal={Spacing.two}>
         <ThemedText themeColor="textSecondary">{hint}</ThemedText>
       </ThemedView>
-    </View>
+    </XStack>
   );
 }
-
-const styles = StyleSheet.create({
-  stepRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  codeSnippet: {
-    borderRadius: Spacing.two,
-    paddingVertical: Spacing.half,
-    paddingHorizontal: Spacing.two,
-  },
-});

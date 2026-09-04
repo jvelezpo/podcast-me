@@ -2,11 +2,10 @@ import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   PanResponder,
-  StyleSheet,
-  View,
   type AccessibilityActionEvent,
   type LayoutChangeEvent,
 } from 'react-native';
+import { Slider, View, XStack, YStack } from 'tamagui';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -159,8 +158,6 @@ export function AudioPlaybackSlider({
     previewSeconds ?? positionSeconds,
     durationSeconds
   );
-  const progress = durationSeconds ? displayPosition / durationSeconds : 0;
-  const progressPercent = `${Math.round(clamp(progress, 0, 1) * 10_000) / 100}%` as const;
   const isScrubbing = previewSeconds !== null;
 
   const handleLayout = (event: LayoutChangeEvent) => {
@@ -183,7 +180,7 @@ export function AudioPlaybackSlider({
   };
 
   return (
-    <View style={styles.container}>
+    <YStack gap={Spacing.one}>
       <View
         {...panResponder.panHandlers}
         accessible
@@ -202,47 +199,49 @@ export function AudioPlaybackSlider({
         }}
         onAccessibilityAction={handleAccessibilityAction}
         onLayout={handleLayout}
-        style={[styles.touchTarget, disabled && styles.disabled]}>
-        <View
+        minHeight={44}
+        justifyContent="center"
+        opacity={disabled ? 0.45 : 1}>
+        <Slider
           pointerEvents="none"
-          style={[
-            styles.track,
-            { backgroundColor: theme.background },
-          ]}>
-          <View
-            style={[
-              styles.fill,
-              { backgroundColor: theme.text, width: progressPercent },
-            ]}
+          accessible={false}
+          width="100%"
+          min={0}
+          max={durationSeconds ?? 1}
+          step={0.01}
+          value={[displayPosition]}>
+          <Slider.Track height={6} borderRadius={3} backgroundColor="$background">
+            <Slider.TrackActive borderRadius={3} backgroundColor="$color" />
+          </Slider.Track>
+          <Slider.Thumb
+            index={0}
+            width={20}
+            height={20}
+            borderWidth={0}
+            borderRadius={10}
+            backgroundColor="$color"
           />
-          <View
-            style={[
-              styles.thumb,
-              {
-                backgroundColor: theme.text,
-                left: progressPercent,
-              },
-            ]}
-          />
-        </View>
+        </Slider>
       </View>
 
-      <View style={styles.timeRow}>
+      <XStack justifyContent="space-between">
         <ThemedText type="smallBold">{formatPlaybackTime(displayPosition)}</ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
           {formatPlaybackTime(durationSeconds)}
         </ThemedText>
-      </View>
+      </XStack>
 
       {!disabled && (
         isScrubbing ? (
-          <View style={styles.scrubFeedback}>
+          <XStack minHeight={32} alignItems="center" gap={Spacing.two}>
             <View
-              style={[
-                styles.scrubIcon,
-                { backgroundColor: theme.background },
-                scrubRate === 3 && styles.fastScrubIcon,
-              ]}>
+              width={32}
+              height={32}
+              alignItems="center"
+              justifyContent="center"
+              borderRadius={16}
+              backgroundColor="$background"
+              scale={scrubRate === 3 ? 1.1 : 1}>
               <SymbolView
                 name={getScrubIcon(scrubRate, scrubDirection)}
                 size={scrubRate === 0.1 ? 16 : scrubRate === 3 ? 24 : 20}
@@ -253,14 +252,14 @@ export function AudioPlaybackSlider({
             <ThemedText type="small" themeColor="textSecondary">
               {`${getScrubRateLabel(scrubRate, scrubDirection)} · Release to seek`}
             </ThemedText>
-          </View>
+          </XStack>
         ) : (
           <ThemedText type="small" themeColor="textSecondary">
             Drag up for precision · down for speed
           </ThemedText>
         )
       )}
-    </View>
+    </YStack>
   );
 }
 
@@ -374,52 +373,3 @@ function formatPlaybackTime(seconds: number | null): string {
 
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
 }
-
-const styles = StyleSheet.create({
-  container: {
-    gap: Spacing.one,
-  },
-  touchTarget: {
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  track: {
-    height: 6,
-    borderRadius: 3,
-  },
-  fill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  thumb: {
-    position: 'absolute',
-    top: -7,
-    width: 20,
-    height: 20,
-    marginLeft: -10,
-    borderRadius: 10,
-  },
-  timeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  scrubFeedback: {
-    minHeight: 32,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.two,
-  },
-  scrubIcon: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 16,
-  },
-  fastScrubIcon: {
-    transform: [{ scale: 1.1 }],
-  },
-  disabled: {
-    opacity: 0.45,
-  },
-});

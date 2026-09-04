@@ -3,12 +3,18 @@
  * https://docs.expo.dev/guides/color-schemes/
  */
 
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { getVariable, useTheme as useTamaguiTheme } from 'tamagui';
 
 export function useTheme() {
-  const scheme = useColorScheme();
-  const theme = scheme === 'unspecified' ? 'light' : scheme;
+  const theme = useTamaguiTheme();
 
-  return Colors[theme];
+  return {
+    background: getVariable(theme.background),
+    backgroundElement: getVariable(theme.backgroundElement),
+    backgroundSelected: getVariable(theme.backgroundSelected),
+    borderColor: getVariable(theme.borderColor),
+    danger: getVariable(theme.danger),
+    text: getVariable(theme.color),
+    textSecondary: getVariable(theme.colorMuted),
+  };
 }

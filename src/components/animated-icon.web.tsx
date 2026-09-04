@@ -1,8 +1,8 @@
 import { Image } from 'expo-image';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import Animated, { Keyframe, Easing } from 'react-native-reanimated';
+import { View, styled } from 'tamagui';
 
-import classes from './animated-icon.module.css';
 const DURATION = 300;
 
 export function AnimatedSplashOverlay() {
@@ -57,17 +57,22 @@ const glowKeyframe = new Keyframe({
 export function AnimatedIcon() {
   return (
     <View style={styles.iconContainer}>
-      <Animated.View entering={glowKeyframe.duration(60 * 1000 * 4)} style={styles.glow}>
+      <AnimatedView entering={glowKeyframe.duration(60 * 1000 * 4)} style={styles.glow}>
         <Image style={styles.glow} source={require('@/assets/images/logo-glow.png')} />
-      </Animated.View>
+      </AnimatedView>
 
-      <Animated.View style={styles.background} entering={keyframe.duration(DURATION)}>
-        <div className={classes.expoLogoBackground} />
-      </Animated.View>
+      <AnimatedView style={styles.background} entering={keyframe.duration(DURATION)}>
+        <View
+          width={128}
+          height={128}
+          borderRadius={40}
+          backgroundImage="linear-gradient(180deg, #3c9ffe, #0274df)"
+        />
+      </AnimatedView>
 
-      <Animated.View style={styles.imageContainer} entering={logoKeyframe.duration(DURATION)}>
+      <AnimatedView style={styles.imageContainer} entering={logoKeyframe.duration(DURATION)}>
         <Image style={styles.image} source={require('@/assets/images/expo-logo.png')} />
-      </Animated.View>
+      </AnimatedView>
     </View>
   );
 }
@@ -105,4 +110,8 @@ const styles = StyleSheet.create({
     height: 128,
     position: 'absolute',
   },
+});
+
+const AnimatedView = styled(Animated.View, {
+  name: 'WebIconAnimatedView',
 });

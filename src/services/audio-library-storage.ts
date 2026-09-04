@@ -128,6 +128,7 @@ function toStoredAudioItem(item: AudioItem): AudioItem {
     localUri: item.localUri,
     mimeType: item.mimeType,
     sizeBytes: item.sizeBytes,
+    contentFingerprint: item.contentFingerprint ?? null,
     durationSeconds: item.durationSeconds,
     lastPositionSeconds: item.lastPositionSeconds,
     addedAt: item.addedAt,
@@ -148,6 +149,7 @@ function isAudioItem(value: unknown): value is AudioItem {
     isNonEmptyString(item.localUri) &&
     isNullableString(item.mimeType) &&
     isNullableNonNegativeNumber(item.sizeBytes) &&
+    isOptionalFingerprint(item.contentFingerprint) &&
     isNullableNonNegativeNumber(item.durationSeconds) &&
     isNonNegativeNumber(item.lastPositionSeconds) &&
     isValidTimestamp(item.addedAt) &&
@@ -177,6 +179,14 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
+}
+
+function isOptionalFingerprint(value: unknown): value is string | null | undefined {
+  return (
+    value === undefined ||
+    value === null ||
+    (typeof value === 'string' && /^[a-fA-F0-9]{32}$/.test(value))
+  );
 }
 
 function isNonNegativeNumber(value: unknown): value is number {

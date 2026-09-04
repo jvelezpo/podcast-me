@@ -1,5 +1,6 @@
 import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File, Paths } from 'expo-file-system';
+import { getInfoAsync } from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 
 import {
@@ -69,6 +70,8 @@ export async function pickAndCopyAudioFiles(
         throw new Error('The copied file is unavailable.');
       }
 
+      const contentFingerprint = await getAudioContentFingerprint(destination.uri);
+
       const timestamp = new Date().toISOString();
 
       items.push({
@@ -80,6 +83,7 @@ export async function pickAndCopyAudioFiles(
           typeof asset.size === 'number' && Number.isFinite(asset.size) && asset.size >= 0
             ? asset.size
             : destination.size,
+        contentFingerprint,
         durationSeconds: null,
         lastPositionSeconds: 0,
         addedAt: timestamp,
@@ -99,7 +103,32 @@ export async function pickAndCopyAudioFiles(
   return { canceled: false, items, failures };
 }
 
-/** Removes only the app-owned copies represented by the supplied new items. */
+/** Adds fingerprints to records created before duplicate protection was introduced. */
+export async function addMissingContentFingerprints<T extends AudioItem>(
+  items: readonly T[]
+): Promise<{ items: T[]; failedItemIds: string[] }> {
+  const fingerprintedItems: T[] = [];
+  const failedItemIds: string[] = [];
+
+  for (const item of items) {
+    if (item.contentFingerprint) {
+      fingerprintedItems.push(item);
+      continue;
+    }
+
+    try {
+      const contentFingerprint = await getAudioContentFingerprint(item.localUri);
+      fingerprintedItems.push({ ...item, contentFingerprint });
+    } catch {
+      fingerprintedItems.push(item);
+      failedItemIds.push(item.id);
+    }
+  }
+
+  return { items: fingerprintedItems, failedItemIds };
+}
+
+/** Removes only the app-owned copies represented by the supplied items. */
 export function deleteImportedAudioFiles(items: readonly AudioItem[]): string[] {
   const failedDeletions: string[] = [];
 
@@ -125,4 +154,14 @@ function tryDeleteFile(file: File): boolean {
   } catch {
     return false;
   }
+}
+
+async function getAudioContentFingerprint(fileUri: string): Promise<string> {
+  const info = await getInfoAsync(fileUri, { md5: true });
+
+  if (!info.exists || !info.md5) {
+    throw new Error('The copied file could not be fingerprinted.');
+  }
+
+  return info.md5.toLowerCase();
 }

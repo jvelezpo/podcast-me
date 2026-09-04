@@ -7,6 +7,8 @@ export type AudioItem = {
   localUri: string;
   mimeType: string | null;
   sizeBytes: number | null;
+  /** Lowercase MD5 of the app-owned copy, used only to prevent duplicate imports. */
+  contentFingerprint: string | null;
   /** Total playback duration in seconds, or null until the player reports it. */
   durationSeconds: number | null;
   /** Resume position in seconds. */

@@ -568,6 +568,62 @@ export function useAudioLibraryPlayer(
     failPlayback(activeItem.id, `Playback failed: ${status.error}`);
   }, [failPlayback, status.error]);
 
+  const removeActiveItem = useCallback(
+    async (
+      itemId: string,
+      nextItem: LoadedAudioItem | null,
+      shouldPlayNext: boolean
+    ): Promise<boolean> => {
+      if (activeItemRef.current?.id !== itemId || transitionInProgress.current) {
+        return false;
+      }
+
+      const requestId = beginTransition();
+      playbackRequested.current = false;
+      setPlaybackError(null);
+      let didReleaseSource = false;
+
+      try {
+        player.pause();
+        await persistCurrentPosition(itemId);
+      } catch {
+        // Removal still has to release the source even if its final checkpoint fails.
+      } finally {
+        if (requestId === transitionSequence.current) {
+          pendingLoad.current = null;
+          try {
+            player.setActiveForLockScreen(false);
+            player.replace(null);
+            didReleaseSource = true;
+          } catch {
+            setPlaybackError({
+              itemId,
+              message: 'Playback could not release this recording. Try removing it again.',
+            });
+          }
+
+          if (didReleaseSource) {
+            activeItemRef.current = null;
+            lastCheckpoint.current = null;
+            setActiveItemId(null);
+          }
+          finishTransition();
+        }
+      }
+
+      if (requestId !== transitionSequence.current || !didReleaseSource) {
+        return false;
+      }
+
+      if (shouldPlayNext && nextItem) {
+        await loadAndPlay(nextItem);
+      }
+
+      return true;
+    },
+    [beginTransition, finishTransition, loadAndPlay, persistCurrentPosition, player]
+  );
+
   useEffect(() => {
     const activeItem = activeItemRef.current;
 
@@ -622,6 +678,7 @@ export function useAudioLibraryPlayer(
     isReady: isLibraryReady,
     isTransitioning,
     playbackError,
+    removeActiveItem,
     seekBy,
     seekTo,
     togglePlayback,

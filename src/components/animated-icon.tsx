@@ -1,9 +1,10 @@
 import { Image } from 'expo-image';
 import * as SplashScreen from 'expo-splash-screen';
 import { useState } from 'react';
-import { Dimensions, StyleSheet, View } from 'react-native';
+import { Dimensions, StyleSheet } from 'react-native';
 import Animated, { Easing, Keyframe } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
+import { View, styled } from 'tamagui';
 
 const INITIAL_SCALE_FACTOR = Dimensions.get('screen').height / 90;
 const DURATION = 600;
@@ -36,7 +37,7 @@ export function AnimatedSplashOverlay() {
   const image = <Image style={styles.image} source={require('@/assets/images/expo-logo.png')} />;
 
   return animate ? (
-    <Animated.View
+    <AnimatedView
       entering={splashKeyframe.duration(DURATION).withCallback((finished) => {
         'worklet';
         if (finished) {
@@ -45,7 +46,7 @@ export function AnimatedSplashOverlay() {
       })}
       style={styles.splashOverlay}>
       {image}
-    </Animated.View>
+    </AnimatedView>
   ) : (
     <View
       onLayout={() => {
@@ -98,14 +99,14 @@ const glowKeyframe = new Keyframe({
 export function AnimatedIcon() {
   return (
     <View style={styles.iconContainer}>
-      <Animated.View entering={glowKeyframe.duration(60 * 1000 * 4)} style={styles.glow}>
+      <AnimatedView entering={glowKeyframe.duration(60 * 1000 * 4)} style={styles.glow}>
         <Image style={styles.glow} source={require('@/assets/images/logo-glow.png')} />
-      </Animated.View>
+      </AnimatedView>
 
-      <Animated.View entering={keyframe.duration(DURATION)} style={styles.background} />
-      <Animated.View style={styles.imageContainer} entering={logoKeyframe.duration(DURATION)}>
+      <AnimatedView entering={keyframe.duration(DURATION)} style={styles.background} />
+      <AnimatedView style={styles.imageContainer} entering={logoKeyframe.duration(DURATION)}>
         <Image style={styles.image} source={require('@/assets/images/expo-logo.png')} />
-      </Animated.View>
+      </AnimatedView>
     </View>
   );
 }
@@ -145,4 +146,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 1000,
   },
+});
+
+const AnimatedView = styled(Animated.View, {
+  name: 'SplashAnimatedView',
 });
