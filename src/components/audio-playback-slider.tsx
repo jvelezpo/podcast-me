@@ -1,11 +1,13 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Animated,
+  Easing,
   PanResponder,
   type AccessibilityActionEvent,
   type LayoutChangeEvent,
 } from 'react-native';
-import { Slider, View, XStack, YStack } from 'tamagui';
+import { View, XStack, YStack } from 'tamagui';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -14,9 +16,12 @@ import { formatPlaybackTime } from '@/utils/audio-display';
 
 type AudioPlaybackSliderProps = {
   accessibilityLabel: string;
+  bufferedSeconds: number | null;
   disabled: boolean;
   durationSeconds: number | null;
-  onSeekTo: (positionSeconds: number) => void;
+  onScrubEnd: () => Promise<void> | void;
+  onScrubStart: () => Promise<void> | void;
+  onSeekTo: (positionSeconds: number) => Promise<void> | void;
   positionSeconds: number;
 };
 
@@ -25,13 +30,17 @@ type ScrubDirection = -1 | 0 | 1;
 
 const ACCESSIBILITY_SEEK_SECONDS = 15;
 const HORIZONTAL_INTENT_THRESHOLD = 3;
+const SCRUB_TOOLTIP_WIDTH = 112;
 const THUMB_TOUCH_RADIUS = 22;
 const VERTICAL_RATE_THRESHOLD = 40;
 
 export function AudioPlaybackSlider({
   accessibilityLabel,
+  bufferedSeconds,
   disabled,
   durationSeconds,
+  onScrubEnd,
+  onScrubStart,
   onSeekTo,
   positionSeconds,
 }: AudioPlaybackSliderProps) {
@@ -39,6 +48,8 @@ export function AudioPlaybackSlider({
   const trackWidthRef = useRef(0);
   const durationRef = useRef(durationSeconds);
   const disabledRef = useRef(disabled);
+  const onScrubEndRef = useRef(onScrubEnd);
+  const onScrubStartRef = useRef(onScrubStart);
   const onSeekToRef = useRef(onSeekTo);
   const positionRef = useRef(positionSeconds);
   const dragStartXRef = useRef(0);
@@ -46,16 +57,43 @@ export function AudioPlaybackSlider({
   const hasHorizontalIntentRef = useRef(false);
   const previousDragXRef = useRef(0);
   const previewRef = useRef<number | null>(null);
+  const scrubStartPromiseRef = useRef<Promise<void>>(Promise.resolve());
+  const [trackWidth, setTrackWidth] = useState(0);
   const [previewSeconds, setPreviewSeconds] = useState<number | null>(null);
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [isSettling, setIsSettling] = useState(false);
   const [scrubRate, setScrubRate] = useState<ScrubRate>(1);
   const [scrubDirection, setScrubDirection] = useState<ScrubDirection>(0);
+  const [thumbVisibility] = useState(() => new Animated.Value(0));
+  const [trackProminence] = useState(() => new Animated.Value(0));
+  const isPreviewing = previewSeconds !== null;
+  const isPrecisionScrubbing = isScrubbing && scrubRate === 0.1;
 
   useEffect(() => {
     durationRef.current = durationSeconds;
     disabledRef.current = disabled;
+    onScrubEndRef.current = onScrubEnd;
+    onScrubStartRef.current = onScrubStart;
     onSeekToRef.current = onSeekTo;
     positionRef.current = positionSeconds;
-  }, [disabled, durationSeconds, onSeekTo, positionSeconds]);
+  }, [
+    disabled,
+    durationSeconds,
+    onScrubEnd,
+    onScrubStart,
+    onSeekTo,
+    positionSeconds,
+  ]);
+
+  useEffect(() => {
+    Animated.spring(trackProminence, {
+      toValue: isPrecisionScrubbing ? 2 : isScrubbing ? 1 : 0,
+      damping: 22,
+      stiffness: 260,
+      mass: 0.7,
+      useNativeDriver: true,
+    }).start();
+  }, [isPrecisionScrubbing, isScrubbing, trackProminence]);
 
   // The native responder must stay stable while playback status rerenders this row.
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
@@ -68,13 +106,35 @@ export function AudioPlaybackSlider({
 
     const finishScrubbing = () => {
       const target = previewRef.current;
+      const scrubStartPromise = scrubStartPromiseRef.current;
       previewRef.current = null;
-      setPreviewSeconds(null);
+      setIsScrubbing(false);
       setScrubRate(1);
       setScrubDirection(0);
+      Animated.timing(thumbVisibility, {
+        toValue: 0,
+        duration: 140,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
 
       if (target !== null) {
-        onSeekToRef.current(target);
+        void (async () => {
+          try {
+            await scrubStartPromise;
+            await onSeekToRef.current(target);
+          } finally {
+            try {
+              await onScrubEndRef.current();
+            } finally {
+              setPreviewSeconds(null);
+              setIsSettling(false);
+            }
+          }
+        })();
+      } else {
+        setPreviewSeconds(null);
+        setIsSettling(false);
       }
     };
 
@@ -105,9 +165,20 @@ export function AudioPlaybackSlider({
         hasHorizontalIntentRef.current = false;
         previousDragXRef.current = event.nativeEvent.pageX;
         previewRef.current = touchPosition;
+        scrubStartPromiseRef.current = Promise.resolve(onScrubStartRef.current());
         setPreviewSeconds(touchPosition);
+        setIsScrubbing(true);
+        setIsSettling(true);
         setScrubRate(1);
         setScrubDirection(0);
+        thumbVisibility.stopAnimation();
+        Animated.spring(thumbVisibility, {
+          toValue: 1,
+          damping: 16,
+          stiffness: 280,
+          mass: 0.55,
+          useNativeDriver: true,
+        }).start();
       },
       onPanResponderMove: (event) => {
         const duration = durationRef.current;
@@ -153,16 +224,34 @@ export function AudioPlaybackSlider({
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
     });
-  }, []);
+  }, [thumbVisibility]);
 
   const displayPosition = clampPosition(
     previewSeconds ?? positionSeconds,
     durationSeconds
   );
-  const isScrubbing = previewSeconds !== null;
+  const currentPosition = clampPosition(positionSeconds, durationSeconds);
+  const safeDuration = durationSeconds ?? 0;
+  const playedProgress = safeDuration > 0 ? currentPosition / safeDuration : 0;
+  const previewProgress = safeDuration > 0 ? displayPosition / safeDuration : 0;
+  const bufferedProgress =
+    safeDuration > 0 ? clamp(bufferedSeconds ?? 0, 0, safeDuration) / safeDuration : 0;
+  const tooltipEdgeInset =
+    trackWidth > 0 ? Math.min(SCRUB_TOOLTIP_WIDTH / 2 / trackWidth, 0.5) : 0;
+  const tooltipProgress = clamp(previewProgress, tooltipEdgeInset, 1 - tooltipEdgeInset);
+  const seekDeltaSeconds = previewSeconds === null ? 0 : previewSeconds - positionSeconds;
+  const currentTimeText = formatPlaybackTime(currentPosition);
+  const previewTimeText = formatPlaybackTime(displayPosition);
+  const totalTimeText = formatPlaybackTime(durationSeconds);
+  const remainingTimeText =
+    durationSeconds === null
+      ? '--:--'
+      : formatPlaybackTime(Math.max(0, durationSeconds - displayPosition));
 
   const handleLayout = (event: LayoutChangeEvent) => {
-    trackWidthRef.current = event.nativeEvent.layout.width;
+    const width = event.nativeEvent.layout.width;
+    trackWidthRef.current = width;
+    setTrackWidth(width);
   };
 
   const handleAccessibilityAction = (event: AccessibilityActionEvent) => {
@@ -171,7 +260,7 @@ export function AudioPlaybackSlider({
     }
 
     const direction = event.nativeEvent.actionName === 'increment' ? 1 : -1;
-    onSeekTo(
+    void onSeekTo(
       clamp(
         positionSeconds + direction * ACCESSIBILITY_SEEK_SECONDS,
         0,
@@ -189,6 +278,7 @@ export function AudioPlaybackSlider({
           { name: 'decrement', label: 'Move backward 15 seconds' },
           { name: 'increment', label: 'Move forward 15 seconds' },
         ]}
+        accessibilityHint="Drag horizontally to seek. Pull up while dragging for finer control."
         accessibilityLabel={accessibilityLabel}
         accessibilityRole="adjustable"
         accessibilityState={{ disabled }}
@@ -196,44 +286,165 @@ export function AudioPlaybackSlider({
           min: 0,
           max: Math.round(durationSeconds ?? 0),
           now: Math.round(displayPosition),
-          text: `${formatPlaybackTime(displayPosition)} of ${formatPlaybackTime(durationSeconds)}`,
+          text:
+            durationSeconds === null
+              ? previewTimeText
+              : `${previewTimeText} of ${totalTimeText}, ${remainingTimeText} remaining`,
         }}
         onAccessibilityAction={handleAccessibilityAction}
         onLayout={handleLayout}
-        minHeight={44}
+        height={48}
         justifyContent="center"
-        opacity={disabled ? 0.45 : 1}>
-        <Slider
+        opacity={disabled && !isScrubbing && !isSettling ? 0.45 : 1}>
+        {isScrubbing && (
+          <View
+            pointerEvents="none"
+            position="absolute"
+            bottom={34}
+            zIndex={2}
+            minWidth={SCRUB_TOOLTIP_WIDTH}
+            alignItems="center"
+            paddingHorizontal={Spacing.two}
+            paddingVertical={Spacing.two}
+            borderRadius={10}
+            backgroundColor="#111827"
+            style={{
+              left: `${tooltipProgress * 100}%`,
+              transform: [{ translateX: -SCRUB_TOOLTIP_WIDTH / 2 }],
+            }}>
+            <ThemedText type="smallBold" color="#FFFFFF">
+              {previewTimeText}
+              {Math.abs(seekDeltaSeconds) >= 0.5
+                ? `  ·  ${formatSeekDelta(seekDeltaSeconds)}`
+                : ''}
+            </ThemedText>
+          </View>
+        )}
+
+        <View
           pointerEvents="none"
-          accessible={false}
-          width="100%"
-          min={0}
-          max={durationSeconds ?? 1}
-          step={0.01}
-          value={[displayPosition]}>
-          <Slider.Track height={7} borderRadius={4} backgroundColor="$backgroundSelected">
-            <Slider.TrackActive borderRadius={4} backgroundColor="$accent" />
-          </Slider.Track>
-          <Slider.Thumb
-            index={0}
-            width={22}
-            height={22}
-            borderWidth={0}
-            borderRadius={11}
-            backgroundColor="$accent"
+          position="absolute"
+          top={23}
+          right={0}
+          left={0}
+          height={2}
+          borderRadius={1}
+          backgroundColor={theme.borderColor}
+        />
+
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            width: '100%',
+            height: 8,
+            overflow: 'hidden',
+            borderRadius: 4,
+            backgroundColor: 'transparent',
+            transform: [
+              {
+                scaleY: trackProminence.interpolate({
+                  inputRange: [0, 1, 2],
+                  outputRange: [0.5, 0.75, 1],
+                }),
+              },
+            ],
+          }}>
+          <View
+            position="absolute"
+            top={0}
+            bottom={0}
+            left={0}
+            width={`${bufferedProgress * 100}%`}
+            borderRadius={4}
+            backgroundColor={theme.textSecondary}
+            opacity={0.32}
           />
-        </Slider>
+          <View
+            position="absolute"
+            top={0}
+            bottom={0}
+            left={0}
+            width={`${playedProgress * 100}%`}
+            borderRadius={4}
+            backgroundColor={theme.accent}
+            opacity={isPreviewing ? 0.45 : 1}
+          />
+          {isPreviewing && (
+            <View
+              position="absolute"
+              top={0}
+              bottom={0}
+              left={0}
+              width={`${previewProgress * 100}%`}
+              borderRadius={4}
+              backgroundColor={theme.accent}
+            />
+          )}
+        </Animated.View>
+
+        {isScrubbing && (
+          <View
+            pointerEvents="none"
+            position="absolute"
+            top={20}
+            left={`${playedProgress * 100}%`}
+            width={8}
+            height={8}
+            marginLeft={-4}
+            borderWidth={2}
+            borderColor={theme.accent}
+            borderRadius={4}
+            backgroundColor={theme.background}
+            opacity={0.72}
+          />
+        )}
+
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: `${previewProgress * 100}%`,
+            width: 28,
+            height: 28,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 14,
+            backgroundColor: theme.accentSubtle,
+            opacity: thumbVisibility,
+            shadowColor: theme.accent,
+            shadowOffset: { width: 0, height: 0 },
+            shadowOpacity: 0.55,
+            shadowRadius: 8,
+            elevation: 6,
+            transform: [
+              { translateX: -14 },
+              {
+                scale: thumbVisibility.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.65, 1],
+                }),
+              },
+              {
+                scale: trackProminence.interpolate({
+                  inputRange: [0, 1, 2],
+                  outputRange: [1, 1, 1.15],
+                }),
+              },
+            ],
+          }}>
+          <View width={16} height={16} borderRadius={8} backgroundColor={theme.accent} />
+        </Animated.View>
       </View>
 
       <XStack justifyContent="space-between" alignItems="center">
-        <ThemedText type="smallBold">{formatPlaybackTime(displayPosition)}</ThemedText>
-        <ThemedText type="metadata" themeColor="textSecondary">
-          {durationSeconds === null
-            ? '--:-- remaining'
-            : `−${formatPlaybackTime(Math.max(0, durationSeconds - displayPosition))}`}
+        <ThemedText type="smallBold" color={isScrubbing ? theme.accent : theme.text}>
+          {currentTimeText}
         </ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
-          {formatPlaybackTime(durationSeconds)}
+          {durationSeconds === null
+            ? '--:--  ·  --:--'
+            : `−${remainingTimeText}  ·  ${totalTimeText}`}
         </ThemedText>
       </XStack>
 
@@ -261,7 +472,7 @@ export function AudioPlaybackSlider({
           </XStack>
         ) : (
           <ThemedText type="small" themeColor="textSecondary">
-            Drag up for precision · down for speed
+            Drag to seek · pull up for precision
           </ThemedText>
         )
       )}
@@ -279,6 +490,16 @@ function getScrubRate(verticalDistance: number): ScrubRate {
   }
 
   return 1;
+}
+
+function formatSeekDelta(deltaSeconds: number): string {
+  const roundedSeconds = Math.round(deltaSeconds);
+  const sign = roundedSeconds >= 0 ? '+' : '−';
+  const magnitude = Math.abs(roundedSeconds);
+
+  return magnitude < 60
+    ? `${sign}${magnitude}s`
+    : `${sign}${formatPlaybackTime(magnitude)}`;
 }
 
 function hasHorizontalIntent(

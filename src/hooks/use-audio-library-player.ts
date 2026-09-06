@@ -268,7 +268,7 @@ export function useAudioLibraryPlayer(
   );
 
   const seekTo = useCallback(
-    (positionSeconds: number): void => {
+    async (positionSeconds: number): Promise<void> => {
       const activeItem = activeItemRef.current;
       const currentStatus = statusRef.current;
 
@@ -292,27 +292,25 @@ export function useAudioLibraryPlayer(
 
       const requestId = beginTransition();
 
-      void (async () => {
-        try {
-          await player.seekTo(targetPosition);
+      try {
+        await player.seekTo(targetPosition);
 
-          if (requestId !== transitionSequence.current) {
-            return;
-          }
-
-          await persistPosition(activeItem.id, targetPosition, duration);
-
-          if (requestId === transitionSequence.current) {
-            finishTransition();
-          }
-        } catch {
-          failPlayback(
-            activeItem.id,
-            'Playback could not move to the requested position. Try again.',
-            requestId
-          );
+        if (requestId !== transitionSequence.current) {
+          return;
         }
-      })();
+
+        await persistPosition(activeItem.id, targetPosition, duration);
+
+        if (requestId === transitionSequence.current) {
+          finishTransition();
+        }
+      } catch {
+        failPlayback(
+          activeItem.id,
+          'Playback could not move to the requested position. Try again.',
+          requestId
+        );
+      }
     },
     [beginTransition, failPlayback, finishTransition, persistPosition, player]
   );
@@ -331,7 +329,7 @@ export function useAudioLibraryPlayer(
       const currentPosition = safePosition(currentStatus.currentTime, duration);
 
       if (currentPosition !== null) {
-        seekTo(currentPosition + offsetSeconds);
+        void seekTo(currentPosition + offsetSeconds);
       }
     },
     [seekTo]
@@ -713,6 +711,7 @@ export function useAudioLibraryPlayer(
     dismissPlayer,
     pausePlayback,
     removeActiveItem,
+    resumePlayback,
     seekBy,
     seekTo,
     setPlaybackRate,

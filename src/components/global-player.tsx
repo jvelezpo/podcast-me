@@ -57,6 +57,7 @@ export function GlobalPlayer() {
   const dismissPlayerRef = useRef(playback.dismissPlayer);
   const isDismissingRef = useRef(false);
   const playerWidthRef = useRef(0);
+  const wasPlayingBeforeScrubRef = useRef(false);
   const sleepTimerPlaybackRef = useRef({
     isPlaying: playback.isPlaying,
     item,
@@ -213,6 +214,23 @@ export function GlobalPlayer() {
     const width = event.nativeEvent.layout.width;
     playerWidthRef.current = width;
     setPlayerWidth(width);
+  };
+
+  const handleScrubStart = () => {
+    wasPlayingBeforeScrubRef.current = playback.isPlaying;
+
+    if (playback.isPlaying) {
+      return playback.pausePlayback(item);
+    }
+  };
+
+  const handleScrubEnd = () => {
+    const shouldResume = wasPlayingBeforeScrubRef.current;
+    wasPlayingBeforeScrubRef.current = false;
+
+    if (shouldResume) {
+      return playback.resumePlayback(item);
+    }
   };
 
   const handleSetSleepTimer = (minutes: number) => {
@@ -375,8 +393,11 @@ export function GlobalPlayer() {
                 <YStack width="100%" gap={Spacing.two}>
                   <AudioPlaybackSlider
                     accessibilityLabel={`${getEpisodeTitle(item.originalName)} playback position`}
+                    bufferedSeconds={item.isAvailable ? duration : null}
                     disabled={isDisabled || duration === null}
                     durationSeconds={duration}
+                    onScrubEnd={handleScrubEnd}
+                    onScrubStart={handleScrubStart}
                     onSeekTo={playback.seekTo}
                     positionSeconds={playback.currentPositionSeconds}
                   />
