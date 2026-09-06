@@ -31,6 +31,14 @@ import {
 } from '@/utils/audio-display';
 
 const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+const SLEEP_TIMER_OPTIONS = [
+  { label: '5m', minutes: 5 },
+  { label: '10m', minutes: 10 },
+  { label: '30m', minutes: 30 },
+  { label: '1h', minutes: 60 },
+  { label: '2h', minutes: 120 },
+] as const;
+const ONE_MINUTE_MS = 60_000;
 const SWIPE_DISMISS_FRACTION = 0.35;
 const SWIPE_DISMISS_MIN_DISTANCE = 72;
 const SWIPE_DISMISS_VELOCITY = 0.65;
@@ -38,18 +46,61 @@ const SWIPE_INTENT_DISTANCE = 10;
 
 export function GlobalPlayer() {
   const { library, playback } = useAudioLibraryContext();
+  const item = library.items.find((candidate) => candidate.id === playback.activeItemId) ?? null;
   const [isOpen, setIsOpen] = useState(false);
   const [playerWidth, setPlayerWidth] = useState(0);
+  const [sleepTimerEndsAt, setSleepTimerEndsAt] = useState<number | null>(null);
+  const [sleepTimerDurationMinutes, setSleepTimerDurationMinutes] = useState<number | null>(null);
+  const [sleepTimerRemainingMs, setSleepTimerRemainingMs] = useState<number | null>(null);
   const activeItemIdRef = useRef<string | null>(null);
   const canSwipeRef = useRef(false);
   const dismissPlayerRef = useRef(playback.dismissPlayer);
   const isDismissingRef = useRef(false);
   const playerWidthRef = useRef(0);
+  const sleepTimerPlaybackRef = useRef({
+    isPlaying: playback.isPlaying,
+    item,
+    pausePlayback: playback.pausePlayback,
+  });
   const swipeOffset = useRef(new Animated.Value(0)).current;
   const media = useMedia();
   const theme = useTheme();
-  const item = library.items.find((candidate) => candidate.id === playback.activeItemId) ?? null;
   const activeItemId = item?.id ?? null;
+
+  useEffect(() => {
+    sleepTimerPlaybackRef.current = {
+      isPlaying: playback.isPlaying,
+      item,
+      pausePlayback: playback.pausePlayback,
+    };
+  }, [item, playback.isPlaying, playback.pausePlayback]);
+
+  useEffect(() => {
+    if (sleepTimerEndsAt === null) {
+      return;
+    }
+
+    const updateSleepTimer = () => {
+      const remainingMs = sleepTimerEndsAt - Date.now();
+
+      if (remainingMs <= 0) {
+        setSleepTimerEndsAt(null);
+        setSleepTimerDurationMinutes(null);
+        setSleepTimerRemainingMs(null);
+
+        const currentPlayback = sleepTimerPlaybackRef.current;
+        if (currentPlayback.isPlaying && currentPlayback.item) {
+          void currentPlayback.pausePlayback(currentPlayback.item);
+        }
+        return;
+      }
+
+      setSleepTimerRemainingMs(remainingMs);
+    };
+
+    const interval = setInterval(updateSleepTimer, 1_000);
+    return () => clearInterval(interval);
+  }, [sleepTimerEndsAt]);
 
   useEffect(() => {
     activeItemIdRef.current = activeItemId;
@@ -163,6 +214,24 @@ export function GlobalPlayer() {
     playerWidthRef.current = width;
     setPlayerWidth(width);
   };
+
+  const handleSetSleepTimer = (minutes: number) => {
+    const durationMs = minutes * ONE_MINUTE_MS;
+    setSleepTimerDurationMinutes(minutes);
+    setSleepTimerRemainingMs(durationMs);
+    setSleepTimerEndsAt(Date.now() + durationMs);
+  };
+
+  const clearSleepTimer = () => {
+    setSleepTimerEndsAt(null);
+    setSleepTimerDurationMinutes(null);
+    setSleepTimerRemainingMs(null);
+  };
+
+  const sleepTimerRemaining =
+    sleepTimerRemainingMs === null
+      ? null
+      : formatSleepTimerRemaining(sleepTimerRemainingMs);
 
   return (
     <>
@@ -361,6 +430,112 @@ export function GlobalPlayer() {
                     </ThemedText>
                   </YStack>
                 </XStack>
+
+                <ThemedView
+                  type="backgroundElement"
+                  width="100%"
+                  gap={Spacing.three}
+                  padding={Spacing.three}
+                  borderWidth={1}
+                  borderColor={sleepTimerEndsAt === null ? '$borderColor' : '$accent'}
+                  borderRadius={Radius.large}>
+                  <XStack alignItems="center" gap={Spacing.two}>
+                    <View
+                      width={42}
+                      height={42}
+                      alignItems="center"
+                      justifyContent="center"
+                      borderRadius={Radius.round}
+                      backgroundColor={
+                        sleepTimerEndsAt === null ? '$backgroundSelected' : '$accentSubtle'
+                      }>
+                      <SymbolView
+                        name={SLEEP_ICON}
+                        size={21}
+                        tintColor={sleepTimerEndsAt === null ? theme.textSecondary : theme.accent}
+                        weight="semibold"
+                      />
+                    </View>
+                    <YStack flex={1} gap={Spacing.half}>
+                      <ThemedText type="smallBold">Sleep timer</ThemedText>
+                      {sleepTimerRemaining ? (
+                        <YStack gap={Spacing.half}>
+                          <ThemedText type="metadata" themeColor="accent">
+                            Playback pauses in
+                          </ThemedText>
+                          <ThemedText
+                            type="heading"
+                            themeColor="accent"
+                            fontSize={20}
+                            lineHeight={24}
+                            accessibilityLabel={`Sleep Timer: ${sleepTimerRemaining}`}
+                            accessibilityLiveRegion="polite">
+                            {sleepTimerRemaining}
+                          </ThemedText>
+                        </YStack>
+                      ) : (
+                        <ThemedText type="metadata" themeColor="textSecondary">
+                          Choose when playback should pause
+                        </ThemedText>
+                      )}
+                    </YStack>
+                    {sleepTimerEndsAt !== null && (
+                      <AppButton
+                        tone="icon"
+                        accessibilityLabel="Cancel sleep timer"
+                        onPress={clearSleepTimer}
+                        borderWidth={1}
+                        borderColor="$accent"
+                        backgroundColor="$accentSubtle">
+                        <SymbolView
+                          name={CLEAR_TIMER_ICON}
+                          size={18}
+                          tintColor={theme.accent}
+                          weight="semibold"
+                        />
+                      </AppButton>
+                    )}
+                  </XStack>
+
+                  <XStack
+                    accessibilityRole="radiogroup"
+                    width="100%"
+                    gap={Spacing.one}
+                    padding={Spacing.one}
+                    borderRadius={Radius.round}
+                    backgroundColor="$backgroundSelected">
+                    {SLEEP_TIMER_OPTIONS.map((option) => {
+                      const isSelected = sleepTimerDurationMinutes === option.minutes;
+
+                      return (
+                        <AppButton
+                          key={option.minutes}
+                          tone="outlined"
+                          accessibilityLabel={
+                            isSelected && sleepTimerRemaining
+                              ? `Sleep Timer: ${sleepTimerRemaining}`
+                              : `Set sleep timer for ${option.label}`
+                          }
+                          accessibilityRole="radio"
+                          accessibilityState={{ selected: isSelected }}
+                          onPress={() => handleSetSleepTimer(option.minutes)}
+                          flex={1}
+                          minWidth={0}
+                          minHeight={44}
+                          paddingHorizontal={0}
+                          paddingVertical={Spacing.two}
+                          borderWidth={0}
+                          backgroundColor={isSelected ? '$accent' : 'transparent'}>
+                          <ThemedText
+                            type="smallBold"
+                            color={isSelected ? theme.accentForeground : theme.text}>
+                            {option.label}
+                          </ThemedText>
+                        </AppButton>
+                      );
+                    })}
+                  </XStack>
+                </ThemedView>
               </YStack>
             </ScrollView>
           </SafeAreaView>
@@ -421,6 +596,14 @@ function nextPlaybackRate(currentRate: number): number {
   return PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length];
 }
 
+function formatSleepTimerRemaining(remainingMs: number): string {
+  if (remainingMs > 60 * ONE_MINUTE_MS) {
+    return `${Math.floor(remainingMs / (60 * ONE_MINUTE_MS))}h left`;
+  }
+
+  return `${Math.max(1, Math.ceil(remainingMs / ONE_MINUTE_MS))}m left`;
+}
+
 const PLAY_ICON: SymbolViewProps['name'] = {
   ios: 'play.fill',
   android: 'play_arrow',
@@ -435,6 +618,16 @@ const CLOSE_ICON: SymbolViewProps['name'] = {
   ios: 'chevron.down',
   android: 'keyboard_arrow_down',
   web: 'keyboard_arrow_down',
+};
+const SLEEP_ICON: SymbolViewProps['name'] = {
+  ios: 'moon.zzz.fill',
+  android: 'bedtime',
+  web: 'bedtime',
+};
+const CLEAR_TIMER_ICON: SymbolViewProps['name'] = {
+  ios: 'xmark',
+  android: 'close',
+  web: 'close',
 };
 const REWIND_ICON: SymbolViewProps['name'] = {
   ios: 'gobackward.15',

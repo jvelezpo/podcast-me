@@ -711,6 +711,7 @@ export function useAudioLibraryPlayer(
     playbackError,
     playbackRate,
     dismissPlayer,
+    pausePlayback,
     removeActiveItem,
     seekBy,
     seekTo,
