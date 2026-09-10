@@ -2,13 +2,20 @@
   "name": "podcast-me",
   "main": "expo-router/entry",
   "version": "1.0.0",
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": ["expo-audio"]
+      }
+    }
+  },
   "dependencies": {
     "@expo/ui": "~57.0.16",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@tamagui/config": "^2.7.7",
     "expo": "~57.0.20",
     "expo-asset": "~57.0.16",
-    "expo-audio": "~57.0.4",
+    "expo-audio": "57.0.4",
     "expo-constants": "~57.0.17",
     "expo-dev-client": "~57.0.18",
     "expo-device": "~57.0.1",
@@ -24,6 +31,7 @@
     "expo-symbols": "~57.0.2",
     "expo-system-ui": "~57.0.3",
     "expo-web-browser": "~57.0.2",
+    "patch-package": "8.0.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
@@ -40,6 +48,7 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
+    "postinstall": "patch-package --error-on-fail",
     "start": "expo start",
     "start:dev": "APP_VARIANT=development expo start --dev-client",
     "reset-project": "node ./scripts/reset-project.js",

@@ -1,0 +1,93 @@
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioFocus.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioFocus.kt
+new file mode 100644
+index 0000000..c9e54ce
+--- /dev/null
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioFocus.kt
+@@ -0,0 +1,22 @@
++package expo.modules.audio
++
++import androidx.media3.common.AudioAttributes
++import androidx.media3.common.C
++import androidx.media3.common.util.UnstableApi
++import androidx.media3.exoplayer.ExoPlayer
++
++@UnstableApi
++internal fun ExoPlayer.configureAudioFocus(interruptionMode: InterruptionMode?) {
++  val exclusive = interruptionMode == InterruptionMode.DO_NOT_MIX
++  val attributes = if (exclusive) {
++    // Podcast playback needs permanent media focus and must pause for spoken interruptions.
++    AudioAttributes.Builder()
++      .setUsage(C.USAGE_MEDIA)
++      .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
++      .build()
++  } else {
++    AudioAttributes.DEFAULT
++  }
++  setAudioAttributes(attributes, exclusive)
++  setHandleAudioBecomingNoisy(true)
++}
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
+index 992239b..c9cbc07 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
+@@ -62,7 +62,7 @@ class AudioModule : Module() {
+   private var allowsBackgroundRecording = false
+   private var playsInSilentMode = true
+ 
+-  private val allPlayables: Sequence<Playable>
++  private val allPlayables: Sequence<BaseAudioPlayer>
+     get() = players.values.asSequence() + playlists.values.asSequence()
+ 
+   private val ringerModeReceiver = RingerModeReceiver {
+@@ -79,6 +79,9 @@ class AudioModule : Module() {
+   private var audioFocusRequest: AudioFocusRequest? = null
+   private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+     appContext.mainQueue.launch {
++      // Exclusive playback is managed by ExoPlayer, including media-session commands.
++      if (interruptionMode == InterruptionMode.DO_NOT_MIX) return@launch
++
+       when (focusChange) {
+         AudioManager.AUDIOFOCUS_LOSS -> {
+           focusAcquired = false
+@@ -141,7 +144,9 @@ class AudioModule : Module() {
+   }
+ 
+   private fun requestAudioFocus() {
+-    if (focusAcquired || !audioEnabled || interruptionMode == InterruptionMode.MIX_WITH_OTHERS) {
++    if (focusAcquired || !audioEnabled || interruptionMode == InterruptionMode.MIX_WITH_OTHERS ||
++      interruptionMode == InterruptionMode.DO_NOT_MIX
++    ) {
+       return
+     }
+ 
+@@ -210,7 +215,13 @@ class AudioModule : Module() {
+ 
+     AsyncFunction("setAudioModeAsync") { mode: AudioMode ->
+       shouldPlayInBackground = mode.shouldPlayInBackground
+-      interruptionMode = mode.interruptionMode
++      runOnMain {
++        if (interruptionMode != mode.interruptionMode) {
++          releaseAudioFocus()
++        }
++        interruptionMode = mode.interruptionMode
++        allPlayables.forEach { it.ref.configureAudioFocus(interruptionMode) }
++      }
+       playsInSilentMode = mode.playsInSilentMode
+       updatePlaySoundThroughEarpiece(mode.shouldRouteThroughEarpiece ?: false)
+       allowsBackgroundRecording = mode.allowsBackgroundRecording
+@@ -362,6 +373,7 @@ class AudioModule : Module() {
+             updateInterval,
+             bufferDurationMs
+           )
++          player.ref.configureAudioFocus(interruptionMode)
+           player.onPlaybackStateChange = { isPlaying ->
+             if (!isPlaying && shouldReleaseFocus()) {
+               releaseAudioFocus()
+@@ -684,6 +696,7 @@ class AudioModule : Module() {
+             }
+           }
+           playlist.loadInitialPlaylist()
++          playlist.ref.configureAudioFocus(interruptionMode)
+           playlist.onPlaybackStateChange = { isPlaying ->
+             if (!isPlaying && shouldReleaseFocus()) {
+               releaseAudioFocus()

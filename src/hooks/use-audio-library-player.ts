@@ -2,9 +2,9 @@ import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-au
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { addBluetoothRouteChangeListener } from '../../modules/audio-route-monitor';
 import type { AudioItemPlaybackUpdate } from '@/hooks/use-audio-library';
 import type { LoadedAudioItem } from '@/services/audio-library-storage';
+import { stopAndroidAutoPlayback } from '../../modules/android-auto';
 
 export type AudioPlaybackError = {
   itemId: string;
@@ -24,12 +24,12 @@ type PendingLoad = {
 };
 
 const CHECKPOINT_INTERVAL_MS = 5_000;
-const ROUTE_SETTLE_DELAY_MS = 600;
 
 export function useAudioLibraryPlayer(
   updateAudioItem: UpdateAudioItem,
   isLibraryReady: boolean
 ) {
+  // Native focus and route handling own recovery; delayed JS play() can override interruptions.
   const player = useAudioPlayer(null, { updateInterval: 500 });
   const status = useAudioPlayerStatus(player);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
@@ -43,7 +43,6 @@ export function useAudioLibraryPlayer(
   const pendingLoad = useRef<PendingLoad | null>(null);
   const lastCheckpoint = useRef<{ itemId: string; savedAt: number } | null>(null);
   const audioModePromise = useRef<Promise<void> | null>(null);
-  const playbackRequested = useRef(false);
   const playbackRateRef = useRef(1);
 
   const finishTransition = useCallback(() => {
@@ -110,7 +109,6 @@ export function useAudioLibraryPlayer(
       }
 
       pendingLoad.current = null;
-      playbackRequested.current = false;
       try {
         player.pause();
         player.setActiveForLockScreen(false);
@@ -162,10 +160,10 @@ export function useAudioLibraryPlayer(
     async (item: LoadedAudioItem) => {
       const requestId = beginTransition();
       const previousItemId = activeItemRef.current?.id ?? null;
-      playbackRequested.current = true;
       setPlaybackError(null);
 
       try {
+        stopAndroidAutoPlayback();
         await ensureAudioMode();
         player.pause();
 
@@ -203,7 +201,6 @@ export function useAudioLibraryPlayer(
   const pausePlayback = useCallback(
     async (item: LoadedAudioItem) => {
       const requestId = beginTransition();
-      playbackRequested.current = false;
       setPlaybackError(null);
 
       try {
@@ -223,10 +220,10 @@ export function useAudioLibraryPlayer(
   const resumePlayback = useCallback(
     async (item: LoadedAudioItem) => {
       const requestId = beginTransition();
-      playbackRequested.current = true;
       setPlaybackError(null);
 
       try {
+        stopAndroidAutoPlayback();
         await ensureAudioMode();
         const currentStatus = statusRef.current;
         const activeItem = activeItemRef.current ?? item;
@@ -351,79 +348,11 @@ export function useAudioLibraryPlayer(
 
   useEffect(() => {
     statusRef.current = status;
-
-    if (
-      status.isLoaded &&
-      !pendingLoad.current &&
-      !transitionInProgress.current
-    ) {
-      playbackRequested.current = status.playing;
-    }
   }, [status]);
 
   useEffect(() => {
     void ensureAudioMode().catch(() => undefined);
   }, [ensureAudioMode]);
-
-  useEffect(() => {
-    const subscription = addBluetoothRouteChangeListener(() => {
-      const activeItem = activeItemRef.current;
-
-      if (
-        !activeItem ||
-        !statusRef.current.isLoaded ||
-        !playbackRequested.current ||
-        pendingLoad.current ||
-        transitionInProgress.current
-      ) {
-        return;
-      }
-
-      const requestId = beginTransition();
-      player.pause();
-
-      void (async () => {
-        try {
-          await persistCurrentPosition(activeItem.id);
-          await delay(ROUTE_SETTLE_DELAY_MS);
-
-          if (
-            requestId !== transitionSequence.current ||
-            activeItemRef.current?.id !== activeItem.id ||
-            !playbackRequested.current
-          ) {
-            return;
-          }
-
-          await ensureAudioMode();
-
-          if (requestId !== transitionSequence.current) {
-            return;
-          }
-
-          activateLockScreenControls(activeItem);
-          player.play();
-          finishTransition();
-        } catch {
-          failPlayback(
-            activeItem.id,
-            'Playback could not recover after the Bluetooth route changed. Try again.',
-            requestId
-          );
-        }
-      })();
-    });
-
-    return () => subscription.remove();
-  }, [
-    activateLockScreenControls,
-    beginTransition,
-    ensureAudioMode,
-    failPlayback,
-    finishTransition,
-    persistCurrentPosition,
-    player,
-  ]);
 
   useEffect(() => {
     const activeItem = activeItemRef.current;
@@ -595,7 +524,6 @@ export function useAudioLibraryPlayer(
       }
 
       const requestId = beginTransition();
-      playbackRequested.current = false;
       setPlaybackError(null);
       let didStopPlayer = false;
 
@@ -652,7 +580,6 @@ export function useAudioLibraryPlayer(
     transitionSequence.current += 1;
     finishTransition();
     lastCheckpoint.current = null;
-    playbackRequested.current = false;
     activeItemRef.current = null;
     player.setActiveForLockScreen(false);
     setActiveItemId(null);
@@ -737,8 +664,4 @@ function safePosition(positionSeconds: number, durationSeconds: number | null): 
   }
 
   return durationSeconds === null ? positionSeconds : Math.min(positionSeconds, durationSeconds);
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

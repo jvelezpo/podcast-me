@@ -41,6 +41,46 @@ npm run start:dev
 
 Use `npm run ios:dev` instead for iOS. These commands regenerate the ignored native project with the correct variant before compiling. The normal `npm run android` and `npm run ios` commands regenerate the production identity first.
 
+### Test Android Auto locally
+
+Podcast Me publishes its imported recordings through an Android Media3 library service. After
+installing a new build, open the phone app once so its current library is synchronized for Android
+Auto. Imports, removals, ordering, playback position, and completion state are synchronized after
+that.
+
+Build a test APK without launching the app:
+
+```bash
+npm run prebuild:dev:android
+cd android
+./gradlew :app:assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+For a real car, enable Android Auto developer mode and **Unknown sources** in Android Auto's
+developer settings so it can list a locally installed APK. For the Desktop Head Unit (DHU), also
+start the head unit server in those settings, connect the phone over USB, then run:
+
+```bash
+adb forward tcp:5277 tcp:5277
+$ANDROID_HOME/extras/google/auto/desktop-head-unit
+```
+
+In Android Auto, open the app launcher, choose **Podcast Me Dev**, then open **My recordings**.
+The player provides play/pause, seek, next/previous, title search, and resume position. The native
+catalogue and service tests can be run with:
+
+```bash
+cd android
+./gradlew :android-auto:testDebugUnitTest
+./gradlew :android-auto:connectedDebugAndroidTest
+```
+
+The connected test starts the actual service on the attached Android device and browses the same
+root/category/recording hierarchy used by Android Auto. See the official
+[Android Auto DHU instructions](https://developer.android.com/training/cars/testing/dhu) and
+[media app testing guide](https://developer.android.com/training/cars/testing/media).
+
 EAS development builds use internal distribution and are not store artifacts:
 
 ```bash

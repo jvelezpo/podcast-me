@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 
 import type { AudioItem } from '@/models/audio-item';
 import {
@@ -9,6 +10,7 @@ import {
 } from '@/services/audio-library-import';
 import {
   loadAudioLibrary,
+  refreshAudioLibraryFromAndroidAuto,
   saveAudioLibrary,
   type LoadedAudioItem,
 } from '@/services/audio-library-storage';
@@ -71,6 +73,26 @@ export function useAudioLibrary() {
     return () => {
       isMounted = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active' || importInProgress.current || mutationInProgress.current) {
+        return;
+      }
+
+      const currentItems = itemsRef.current;
+      void refreshAudioLibraryFromAndroidAuto(currentItems)
+        .then((refreshedItems) => {
+          if (refreshedItems !== currentItems) {
+            itemsRef.current = refreshedItems;
+            setItems(refreshedItems);
+          }
+        })
+        .catch(() => undefined);
+    });
+
+    return () => subscription.remove();
   }, []);
 
   async function addAudio(): Promise<AddAudioOutcome> {

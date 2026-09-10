@@ -1,9 +1,0 @@
-{
-  "platforms": ["apple", "android"],
-  "apple": {
-    "modules": ["AudioRouteMonitorModule"]
-  },
-  "android": {
-    "modules": ["expo.modules.audioroutemonitor.AudioRouteMonitorModule"]
-  }
-}

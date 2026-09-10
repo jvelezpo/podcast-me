@@ -2,6 +2,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { File } from 'expo-file-system';
 
 import { AUDIO_LIBRARY_STORAGE_KEY, type AudioItem } from '@/models/audio-item';
+import {
+  consumeAndroidAutoPlaybackUpdates,
+  syncAndroidAutoLibrary,
+  type AndroidAutoPlaybackUpdate,
+} from '../../modules/android-auto';
 
 export type LoadedAudioItem = AudioItem & {
   /** Runtime-only state; this value is not written to AsyncStorage. */
@@ -44,6 +49,7 @@ export async function loadAudioLibrary(): Promise<AudioLibraryLoadResult> {
   }
 
   if (storedValue === null) {
+    await syncAndroidAutoLibrary('[]');
     return { items: [], error: null };
   }
 
@@ -59,8 +65,16 @@ export async function loadAudioLibrary(): Promise<AudioLibraryLoadResult> {
     };
   }
 
+  const reconciledItems = await mergeAndroidAutoPlaybackUpdates(items);
+  const serializedItems = serializeAudioItems(reconciledItems);
+
+  if (reconciledItems !== items) {
+    await AsyncStorage.setItem(AUDIO_LIBRARY_STORAGE_KEY, serializedItems);
+  }
+  await syncAndroidAutoLibrary(serializedItems);
+
   return {
-    items: items.map((item) => {
+    items: reconciledItems.map((item) => {
       const unavailableReason = getUnavailableReason(item);
 
       return {
@@ -86,13 +100,80 @@ export function saveAudioLibrary(items: readonly AudioItem[]): Promise<void> {
     return Promise.reject(error);
   }
 
-  const write = writeTail.then(() =>
-    AsyncStorage.setItem(AUDIO_LIBRARY_STORAGE_KEY, serializedItems)
-  );
+  const write = writeTail.then(async () => {
+    await AsyncStorage.setItem(AUDIO_LIBRARY_STORAGE_KEY, serializedItems);
+    await syncAndroidAutoLibrary(serializedItems);
+  });
 
   writeTail = write.catch(() => undefined);
 
   return write;
+}
+
+/** Applies positions saved by the native car player after the app returns to foreground. */
+export async function refreshAudioLibraryFromAndroidAuto(
+  items: readonly LoadedAudioItem[]
+): Promise<LoadedAudioItem[]> {
+  await writeTail;
+  const reconciledItems = await mergeAndroidAutoPlaybackUpdates(items);
+
+  if (reconciledItems === items) {
+    return items as LoadedAudioItem[];
+  }
+
+  const serializedItems = serializeAudioItems(reconciledItems);
+  await AsyncStorage.setItem(AUDIO_LIBRARY_STORAGE_KEY, serializedItems);
+  await syncAndroidAutoLibrary(serializedItems);
+  return reconciledItems;
+}
+
+async function mergeAndroidAutoPlaybackUpdates<T extends AudioItem>(
+  items: readonly T[]
+): Promise<T[]> {
+  const updates = await consumeAndroidAutoPlaybackUpdates();
+  const validUpdates = new Map(
+    updates.filter(isAndroidAutoPlaybackUpdate).map((update) => [update.id, update])
+  );
+
+  if (validUpdates.size === 0) {
+    return items as T[];
+  }
+
+  let didChange = false;
+  const mergedItems = items.map((item) => {
+    const update = validUpdates.get(item.id);
+
+    if (!update) {
+      return item;
+    }
+
+    if (update.updatedAtEpochMs < Date.parse(item.updatedAt)) {
+      return item;
+    }
+
+    didChange = true;
+    return {
+      ...item,
+      durationSeconds: update.durationSeconds ?? item.durationSeconds,
+      lastPositionSeconds: update.lastPositionSeconds,
+      isPlayed: item.isPlayed || update.isPlayed,
+      updatedAt: new Date(update.updatedAtEpochMs).toISOString(),
+    };
+  });
+
+  return didChange ? mergedItems : (items as T[]);
+}
+
+function isAndroidAutoPlaybackUpdate(
+  update: AndroidAutoPlaybackUpdate
+): update is AndroidAutoPlaybackUpdate {
+  return (
+    isNonEmptyString(update?.id) &&
+    isNullableNonNegativeNumber(update.durationSeconds) &&
+    isNonNegativeNumber(update.lastPositionSeconds) &&
+    typeof update.isPlayed === 'boolean' &&
+    isNonNegativeNumber(update.updatedAtEpochMs)
+  );
 }
 
 function parseStoredAudioItems(storedValue: string): AudioItem[] | null {
