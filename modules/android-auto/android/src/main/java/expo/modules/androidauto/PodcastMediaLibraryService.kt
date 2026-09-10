@@ -30,6 +30,7 @@ import java.lang.ref.WeakReference
 private const val ROOT_ID = "podcast-me-root"
 private const val LIBRARY_ID = "podcast-me-library"
 private const val CHECKPOINT_INTERVAL_MS = 5_000L
+private const val PLAYBACK_STATE_INTERVAL_MS = 500L
 private const val SEEK_INCREMENT_MS = 15_000L
 private const val SEEK_BACK_15_ACTION = "expo.modules.androidauto.SEEK_BACK_15"
 private const val SEEK_FORWARD_15_ACTION = "expo.modules.androidauto.SEEK_FORWARD_15"
@@ -81,14 +82,26 @@ class PodcastMediaLibraryService : MediaLibraryService() {
     }
   }
 
+  private val playbackStateUpdate = object : Runnable {
+    override fun run() {
+      notifyPlaybackState()
+      if (player.isPlaying) {
+        handler.postDelayed(this, PLAYBACK_STATE_INTERVAL_MS)
+      }
+    }
+  }
+
   private val playerListener = object : Player.Listener {
     override fun onIsPlayingChanged(isPlaying: Boolean) {
       handler.removeCallbacks(checkpoint)
+      handler.removeCallbacks(playbackStateUpdate)
       if (isPlaying) {
         handler.postDelayed(checkpoint, CHECKPOINT_INTERVAL_MS)
+        handler.postDelayed(playbackStateUpdate, PLAYBACK_STATE_INTERVAL_MS)
       } else {
         persistCurrentPlayback()
       }
+      notifyPlaybackState()
     }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
@@ -99,12 +112,16 @@ class PodcastMediaLibraryService : MediaLibraryService() {
 
     override fun onPlayerError(error: PlaybackException) {
       persistCurrentPlayback()
+      notifyPlaybackState()
+    }
+
+    override fun onEvents(player: Player, events: Player.Events) {
+      notifyPlaybackState()
     }
   }
 
   override fun onCreate() {
     super.onCreate()
-    activeService = WeakReference(this)
 
     player = ExoPlayer.Builder(this)
       .setAudioAttributes(
@@ -134,6 +151,8 @@ class PodcastMediaLibraryService : MediaLibraryService() {
       )
     }
     session = builder.build()
+    activeService = WeakReference(this)
+    notifyPlaybackState()
   }
 
   override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession =
@@ -141,10 +160,14 @@ class PodcastMediaLibraryService : MediaLibraryService() {
 
   override fun onDestroy() {
     handler.removeCallbacks(checkpoint)
+    handler.removeCallbacks(playbackStateUpdate)
     persistCurrentPlayback()
-    activeService = null
+    if (activeService?.get() === this) {
+      activeService = null
+    }
     session.release()
     player.release()
+    notifyUnavailable()
     super.onDestroy()
   }
 
@@ -177,6 +200,92 @@ class PodcastMediaLibraryService : MediaLibraryService() {
     if (!::player.isInitialized) return
     persistCurrentPlayback()
     player.pause()
+  }
+
+  private fun playFromPhone(mediaId: String, positionMs: Long, rate: Float): Boolean {
+    val catalog = AndroidAutoStore.catalog(this)
+    val selectedIndex = catalog.indexOfFirst { it.id == mediaId }
+    if (selectedIndex < 0) return false
+
+    if (player.currentMediaItem?.mediaId != mediaId) {
+      player.setMediaItems(catalog.map(::playableItem), selectedIndex, positionMs)
+      player.prepare()
+    } else if (player.playbackState == Player.STATE_ENDED) {
+      player.seekTo(0)
+    } else if (player.playbackState == Player.STATE_IDLE) {
+      player.prepare()
+    }
+
+    player.setPlaybackSpeed(rate.coerceIn(0.5f, 2f))
+    player.play()
+    notifyPlaybackState()
+    return true
+  }
+
+  private fun pauseFromPhone(): Boolean {
+    if (player.currentMediaItem == null) return false
+    persistCurrentPlayback()
+    player.pause()
+    notifyPlaybackState()
+    return true
+  }
+
+  private fun seekFromPhone(positionMs: Long): Boolean {
+    if (player.currentMediaItem == null) return false
+    player.seekTo(positionMs.coerceAtLeast(0))
+    persistCurrentPlayback()
+    notifyPlaybackState()
+    return true
+  }
+
+  private fun setPlaybackRateFromPhone(rate: Float): Boolean {
+    if (player.currentMediaItem == null) return false
+    player.setPlaybackSpeed(rate.coerceIn(0.5f, 2f))
+    notifyPlaybackState()
+    return true
+  }
+
+  private fun dismissFromPhone(): Boolean {
+    if (player.currentMediaItem == null) return false
+    persistCurrentPlayback()
+    player.stop()
+    player.clearMediaItems()
+    notifyPlaybackState()
+    return true
+  }
+
+  private fun playbackState(): Map<String, Any?> {
+    val duration = player.duration.takeIf { it > 0 && it != C.TIME_UNSET }
+    return mapOf(
+      "serviceReady" to true,
+      "mediaId" to player.currentMediaItem?.mediaId,
+      "currentPositionSeconds" to player.currentPosition.coerceAtLeast(0) / 1_000.0,
+      "durationSeconds" to duration?.div(1_000.0),
+      "isPlaying" to player.isPlaying,
+      "isLoaded" to (player.currentMediaItem != null),
+      "isEnded" to (player.playbackState == Player.STATE_ENDED),
+      "playbackRate" to player.playbackParameters.speed.toDouble(),
+      "error" to player.playerError?.message,
+    )
+  }
+
+  private fun notifyPlaybackState() {
+    playbackStateObserver?.invoke(playbackState())
+  }
+
+  private fun dispatchFromBridge(action: PodcastMediaLibraryService.() -> Unit) {
+    val service = this
+    val runnable = Runnable {
+      if (activeService?.get() === service) {
+        service.action()
+      }
+    }
+
+    if (Looper.myLooper() === handler.looper) {
+      runnable.run()
+    } else {
+      handler.post(runnable)
+    }
   }
 
   private inner class LibraryCallback : MediaLibrarySession.Callback {
@@ -405,14 +514,76 @@ class PodcastMediaLibraryService : MediaLibraryService() {
   }
 
   companion object {
+    @Volatile
     private var activeService: WeakReference<PodcastMediaLibraryService>? = null
+    @Volatile
+    private var playbackStateObserver: ((Map<String, Any?>) -> Unit)? = null
 
     fun catalogChanged() {
-      activeService?.get()?.handleCatalogChanged()
+      activeService?.get()?.dispatchFromBridge { handleCatalogChanged() }
     }
 
     fun stopPlaybackFromPhone() {
-      activeService?.get()?.stopForPhonePlayback()
+      activeService?.get()?.dispatchFromBridge { stopForPhonePlayback() }
     }
+
+    fun observePlaybackState(
+      context: android.content.Context,
+      observer: (Map<String, Any?>) -> Unit,
+    ) {
+      Handler(Looper.getMainLooper()).post {
+        playbackStateObserver = observer
+        val service = activeService?.get()
+        if (service == null) {
+          context.applicationContext.startService(
+            Intent(context.applicationContext, PodcastMediaLibraryService::class.java),
+          )
+        } else {
+          service.notifyPlaybackState()
+        }
+      }
+    }
+
+    fun removePlaybackStateObserver(observer: (Map<String, Any?>) -> Unit) {
+      Handler(Looper.getMainLooper()).post {
+        if (playbackStateObserver === observer) {
+          playbackStateObserver = null
+        }
+      }
+    }
+
+    fun currentPlaybackState(): Map<String, Any?> =
+      activeService?.get()?.playbackState() ?: unavailablePlaybackState()
+
+    fun playFromPhone(mediaId: String, positionMs: Long, rate: Float): Boolean =
+      activeService?.get()?.playFromPhone(mediaId, positionMs, rate) ?: false
+
+    fun pauseFromPhone(): Boolean =
+      activeService?.get()?.pauseFromPhone() ?: false
+
+    fun seekFromPhone(positionMs: Long): Boolean =
+      activeService?.get()?.seekFromPhone(positionMs) ?: false
+
+    fun setPlaybackRateFromPhone(rate: Float): Boolean =
+      activeService?.get()?.setPlaybackRateFromPhone(rate) ?: false
+
+    fun dismissFromPhone(): Boolean =
+      activeService?.get()?.dismissFromPhone() ?: false
+
+    private fun notifyUnavailable() {
+      playbackStateObserver?.invoke(unavailablePlaybackState())
+    }
+
+    private fun unavailablePlaybackState(): Map<String, Any?> = mapOf(
+      "serviceReady" to false,
+      "mediaId" to null,
+      "currentPositionSeconds" to 0.0,
+      "durationSeconds" to null,
+      "isPlaying" to false,
+      "isLoaded" to false,
+      "isEnded" to false,
+      "playbackRate" to 1.0,
+      "error" to null,
+    )
   }
 }

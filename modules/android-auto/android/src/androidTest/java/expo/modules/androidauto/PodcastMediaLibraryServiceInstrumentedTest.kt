@@ -15,9 +15,13 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -27,15 +31,15 @@ class PodcastMediaLibraryServiceInstrumentedTest {
   @Test
   fun mediaBrowserCanDiscoverSyncedRecordings() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
-    val audioFile = File(context.filesDir, "android-auto-browser-test.mp3")
-      .apply { writeBytes(byteArrayOf(1)) }
+    val audioFile = File(context.filesDir, "android-auto-browser-test.wav")
+      .apply { writeBytes(silentWave(durationSeconds = 60)) }
     AndroidAutoStore.syncLibrary(
       context,
       JSONArray().put(JSONObject().apply {
         put("id", "browser-test")
-        put("originalName", "Browser test.mp3")
+        put("originalName", "Browser test.wav")
         put("localUri", audioFile.toURI().toString())
-        put("mimeType", "audio/mpeg")
+        put("mimeType", "audio/wav")
         put("durationSeconds", 60.0)
         put("lastPositionSeconds", 0.0)
         put("isPlayed", false)
@@ -89,6 +93,46 @@ class PodcastMediaLibraryServiceInstrumentedTest {
         "android.resource",
         recordings.value!!.single().mediaMetadata.artworkUri!!.scheme,
       )
+
+      val observedState = AtomicReference<Map<String, Any?>>()
+      val observer: (Map<String, Any?>) -> Unit = observedState::set
+      PodcastMediaLibraryService.observePlaybackState(context, observer)
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      assertEquals(true, observedState.get()["serviceReady"])
+
+      assertTrue(onMainThread {
+        PodcastMediaLibraryService.playFromPhone("browser-test", 12_000, 1.5f)
+      })
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      assertEquals("browser-test", onMainThread { browser.currentMediaItem?.mediaId })
+      assertEquals("browser-test", observedState.get()["mediaId"])
+      assertEquals(1.5, observedState.get()["playbackRate"])
+
+      onMainThread { browser.pause() }
+      onMainThread { browser.seekTo(20_000) }
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      assertEquals(20.0, observedState.get()["currentPositionSeconds"])
+
+      assertTrue(onMainThread { PodcastMediaLibraryService.dismissFromPhone() })
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      assertNull(onMainThread { browser.currentMediaItem })
+      assertNull(observedState.get()["mediaId"])
+      PodcastMediaLibraryService.removePlaybackStateObserver(observer)
+
+      val bridgeError = AtomicReference<Throwable?>()
+      Thread {
+        try {
+          PodcastMediaLibraryService.catalogChanged()
+          PodcastMediaLibraryService.stopPlaybackFromPhone()
+        } catch (error: Throwable) {
+          bridgeError.set(error)
+        }
+      }.apply {
+        start()
+        join()
+      }
+      assertNull(bridgeError.get())
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
     } finally {
       onMainThread { browser.release() }
       audioFile.delete()
@@ -99,5 +143,30 @@ class PodcastMediaLibraryServiceInstrumentedTest {
     val result = AtomicReference<T>()
     InstrumentationRegistry.getInstrumentation().runOnMainSync { result.set(block()) }
     return result.get()
+  }
+
+  private fun silentWave(durationSeconds: Int): ByteArray {
+    val sampleRate = 8_000
+    val channelCount = 1
+    val bytesPerSample = 2
+    val dataSize = durationSeconds * sampleRate * channelCount * bytesPerSample
+    return ByteBuffer.allocate(44 + dataSize)
+      .order(ByteOrder.LITTLE_ENDIAN)
+      .apply {
+        put("RIFF".toByteArray())
+        putInt(36 + dataSize)
+        put("WAVE".toByteArray())
+        put("fmt ".toByteArray())
+        putInt(16)
+        putShort(1.toShort())
+        putShort(channelCount.toShort())
+        putInt(sampleRate)
+        putInt(sampleRate * channelCount * bytesPerSample)
+        putShort((channelCount * bytesPerSample).toShort())
+        putShort((bytesPerSample * 8).toShort())
+        put("data".toByteArray())
+        putInt(dataSize)
+      }
+      .array()
   }
 }

@@ -408,10 +408,8 @@ export function useAudioLibraryPlayer(
       if (activeItem) {
         void persistCurrentPosition(activeItem.id);
       }
-
-      player.setActiveForLockScreen(false);
     };
-  }, [persistCurrentPosition, player]);
+  }, [persistCurrentPosition]);
 
   useEffect(() => {
     const pending = pendingLoad.current;
