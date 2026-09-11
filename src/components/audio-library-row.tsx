@@ -254,7 +254,11 @@ export function AudioLibraryRow({
             justifyContent="flex-start"
             padding={0}
           >
-            <EpisodeArtwork itemId={item.id} name={item.originalName} size={76} />
+            <EpisodeArtwork
+              itemId={item.id}
+              name={item.originalName}
+              size={76}
+            />
 
             <YStack flex={1} minWidth={0} gap={Spacing.one}>
               <ThemedText type="episodeTitle" numberOfLines={2}>
@@ -280,7 +284,11 @@ export function AudioLibraryRow({
                   height={7}
                   borderRadius={7}
                   backgroundColor={
-                    item.isPlayed ? '$success' : isActive ? '$accent' : '$warning'
+                    item.isPlayed
+                      ? '$success'
+                      : isActive
+                        ? '$accent'
+                        : '$warning'
                   }
                 />
                 <ThemedText
