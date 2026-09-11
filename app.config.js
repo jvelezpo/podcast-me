@@ -1,3 +1,5 @@
+const { version } = require('./package.json');
+
 const appVariant = process.env.APP_VARIANT ?? 'production';
 
 if (appVariant !== 'development' && appVariant !== 'production') {
@@ -10,6 +12,7 @@ const isDevelopment = appVariant === 'development';
 
 module.exports = ({ config: productionConfig }) => ({
   ...productionConfig,
+  version,
   name: isDevelopment ? 'Podcast Me Dev' : productionConfig.name,
   icon: isDevelopment
     ? './assets/images/podcast-me-dev-icon.png'

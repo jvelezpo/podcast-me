@@ -20,6 +20,7 @@ import {
 } from '@/contexts/theme-preference-context';
 import { useTheme } from '@/hooks/use-theme';
 import { formatPlaybackTime } from '@/utils/audio-display';
+import { version } from '../../package.json';
 
 export default function ProfileScreen() {
   const { library, playback } = useAudioLibraryContext();
@@ -145,6 +146,9 @@ export default function ProfileScreen() {
               tintColor={theme.success}
             />
           </SectionCard>
+          <ThemedText type="metadata" themeColor="textSecondary" textAlign="center">
+            Podcast Me · Version {version}
+          </ThemedText>
         </ScrollView>
       </SafeAreaView>
     </ThemedView>

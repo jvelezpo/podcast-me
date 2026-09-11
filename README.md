@@ -23,6 +23,34 @@ In the output, you'll find options to open the app in a
 - [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
 - [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
 
+## App version
+
+The bottom of **Profile** displays the version from `package.json`. Expo also reads
+that version in `app.config.js`, so the app and build configuration share one source.
+
+`npm install` / `npm ci` installs the pre-commit hook. For an existing checkout, run
+`npm run prepare` once. The installer preserves the global TokenSave hooks, which
+delegate to `.git/hooks/pre-commit`. Other custom global hooks must also delegate
+to the repository hook.
+
+Each commit with staged changes bumps the patch version (for example, `1.0.0` →
+`1.0.1`) and stages `package.json` and `package-lock.json`. Fully stage or stash
+changes to those files first; the hook stops if they have unstaged changes.
+Retries keep an already staged version bump instead of incrementing it again.
+
+Choose a semantic minor version for new features or a major version for breaking
+changes before committing:
+
+```bash
+npm version minor --no-git-tag-version
+# Or: npm version major --no-git-tag-version
+git add package.json package-lock.json
+```
+
+The hook honors that staged version. It does not infer release types from commit
+messages. Android's `versionCode` remains a separate build number to increase for
+distributed updates. Run the hook regression checks with `npm run test:version`.
+
 ## Development app
 
 Podcast Me has a separate development-only app that can be installed alongside production:

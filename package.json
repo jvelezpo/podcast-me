@@ -1,11 +1,13 @@
 {
   "name": "podcast-me",
   "main": "expo-router/entry",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "expo": {
     "autolinking": {
       "android": {
-        "buildFromSource": ["expo-audio"]
+        "buildFromSource": [
+          "expo-audio"
+        ]
       }
     }
   },
@@ -48,6 +50,8 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
+    "prepare": "node ./scripts/install-git-hooks.js",
+    "test:version": "node --test tests/version-hook.test.js",
     "postinstall": "patch-package --error-on-fail",
     "start": "expo start",
     "start:dev": "APP_VARIANT=development expo start --dev-client",
