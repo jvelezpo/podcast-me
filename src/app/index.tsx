@@ -21,7 +21,7 @@ import type { LoadedAudioItem } from '@/services/audio-library-storage';
 import { formatPlaybackTime } from '@/utils/audio-display';
 
 export default function HomeScreen() {
-  const { library, playback } = useAudioLibraryContext();
+  const { library, playback, openPlayer } = useAudioLibraryContext();
   const media = useMedia();
   const theme = useTheme();
   const listRef = useRef<FlatList<LoadedAudioItem>>(null);
@@ -334,6 +334,7 @@ export default function HomeScreen() {
                 loadedDurationSeconds={playback.durationSeconds}
                 playbackError={playback.playbackError}
                 onDelete={confirmRemoveAudio}
+                onOpenPlayer={openPlayer}
                 onReorder={(itemId, offset) => void library.reorderAudio(itemId, offset)}
                 onTogglePlayback={playback.togglePlayback}
               />

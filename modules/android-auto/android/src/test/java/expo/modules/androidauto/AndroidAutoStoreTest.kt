@@ -52,6 +52,16 @@ class AndroidAutoStoreTest {
   }
 
   @Test
+  fun syncLibraryPublishesAudioWithoutMimeMetadata() {
+    AndroidAutoStore.syncLibrary(
+      context,
+      JSONArray().put(catalogItem("available", audioFile.toURI().toString(), null)).toString(),
+    )
+
+    assertEquals(listOf("available"), AndroidAutoStore.catalog(context).map { it.id })
+  }
+
+  @Test
   fun invalidSyncDoesNotReplaceExistingCatalog() {
     val validCatalog = JSONArray()
       .put(catalogItem("available", audioFile.toURI().toString()))
@@ -86,11 +96,11 @@ class AndroidAutoStoreTest {
     assertFalse(AndroidAutoStore.consumePlaybackUpdates(context).let(::JSONArray).length() > 0)
   }
 
-  private fun catalogItem(id: String, uri: String) = JSONObject().apply {
+  private fun catalogItem(id: String, uri: String, mimeType: String? = "audio/mpeg") = JSONObject().apply {
     put("id", id)
     put("originalName", "$id.mp3")
     put("localUri", uri)
-    put("mimeType", "audio/mpeg")
+    put("mimeType", mimeType ?: JSONObject.NULL)
     put("durationSeconds", 60.0)
     put("lastPositionSeconds", 12.5)
     put("isPlayed", false)

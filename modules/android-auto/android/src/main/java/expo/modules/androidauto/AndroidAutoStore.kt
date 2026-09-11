@@ -100,12 +100,13 @@ internal object AndroidAutoStore {
         val originalTitle = value.optString("originalName").trim()
         val title = originalTitle.withoutAudioFileExtension()
         val uri = Uri.parse(value.optString("localUri"))
-        val mimeType = value.optString("mimeType", "audio/")
+        val mimeType = if (value.isNull("mimeType")) "" else value.optString("mimeType").trim()
         val file = uri.path?.let(::File)
 
         if (
           id.isEmpty() || originalTitle.isEmpty() || uri.scheme != "file" ||
-          file?.isFile != true || !mimeType.startsWith("audio/", ignoreCase = true)
+          file?.isFile != true ||
+          (mimeType.isNotEmpty() && !mimeType.startsWith("audio/", ignoreCase = true))
         ) {
           continue
         }

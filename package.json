@@ -1,7 +1,7 @@
 {
   "name": "podcast-me",
   "main": "expo-router/entry",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "expo": {
     "autolinking": {
       "android": {
@@ -58,8 +58,10 @@
     "reset-project": "node ./scripts/reset-project.js",
     "prebuild:dev:android": "APP_VARIANT=development expo prebuild --clean --platform android",
     "prebuild:dev:ios": "APP_VARIANT=development expo prebuild --clean --platform ios",
-    "android:dev": "npm run prebuild:dev:android && APP_VARIANT=development expo run:android",
-    "ios:dev": "npm run prebuild:dev:ios && APP_VARIANT=development expo run:ios",
+    "android:dev": "APP_VARIANT=development expo run:android",
+    "android:dev:all": "npm run prebuild:dev:android && APP_VARIANT=development expo run:android",
+    "ios:dev": "APP_VARIANT=development expo run:ios",
+    "ios:dev:all": "npm run prebuild:dev:ios && APP_VARIANT=development expo run:ios",
     "prebuild:production:android": "APP_VARIANT=production expo prebuild --clean --platform android",
     "prebuild:production:ios": "APP_VARIANT=production expo prebuild --clean --platform ios",
     "android": "npm run prebuild:production:android && APP_VARIANT=production expo run:android",

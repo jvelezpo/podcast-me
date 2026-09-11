@@ -35,6 +35,7 @@ type AudioLibraryRowProps = {
   isDeleteDisabled: boolean
   isReorderDisabled: boolean
   onDelete: (item: LoadedAudioItem) => void
+  onOpenPlayer: (item: LoadedAudioItem) => void
   onReorder: (itemId: string, offset: number) => void
   onTogglePlayback: (item: LoadedAudioItem) => void
 }
@@ -52,6 +53,7 @@ export function AudioLibraryRow({
   isDeleteDisabled,
   isReorderDisabled,
   onDelete,
+  onOpenPlayer,
   onReorder,
   onTogglePlayback,
 }: AudioLibraryRowProps) {
@@ -242,57 +244,68 @@ export function AudioLibraryRow({
           >
             <SymbolView name={REORDER_ICON} size={18} tintColor={theme.text} />
           </View>
-          <EpisodeArtwork itemId={item.id} name={item.originalName} size={76} />
+          <AppButton
+            tone="ghost"
+            accessibilityLabel={`Open player for ${title}`}
+            disabled={!isPlaybackReady || !item.isAvailable || isTransitioning}
+            onPress={() => onOpenPlayer(item)}
+            minWidth={0}
+            flex={1}
+            justifyContent="flex-start"
+            padding={0}
+          >
+            <EpisodeArtwork itemId={item.id} name={item.originalName} size={76} />
 
-          <YStack flex={1} minWidth={0} gap={Spacing.one}>
-            <ThemedText type="episodeTitle" numberOfLines={2}>
-              {title}
-            </ThemedText>
-            <ThemedText
-              type="metadata"
-              themeColor="textSecondary"
-              numberOfLines={1}
-            >
-              Podcast Me · {formatEpisodeDate(item.addedAt)}
-            </ThemedText>
-            <ThemedText
-              type="metadata"
-              themeColor="textSecondary"
-              numberOfLines={1}
-            >
-              {formatFileSize(item.sizeBytes)} · Saved offline
-            </ThemedText>
-            <XStack alignItems="center" gap={Spacing.one}>
-              <View
-                width={7}
-                height={7}
-                borderRadius={7}
-                backgroundColor={
-                  item.isPlayed ? '$success' : isActive ? '$accent' : '$warning'
-                }
-              />
+            <YStack flex={1} minWidth={0} gap={Spacing.one}>
+              <ThemedText type="episodeTitle" numberOfLines={2}>
+                {title}
+              </ThemedText>
               <ThemedText
                 type="metadata"
-                color={
-                  item.isPlayed
-                    ? '$success'
-                    : isActive
-                      ? '$accent'
-                      : '$colorMuted'
-                }
+                themeColor="textSecondary"
+                numberOfLines={1}
               >
-                {item.isPlayed
-                  ? 'Played'
-                  : isActive
-                    ? isPlaying
-                      ? 'Playing'
-                      : 'In progress'
-                    : progress > 0
-                      ? 'In progress'
-                      : 'Unplayed'}
+                Podcast Me · {formatEpisodeDate(item.addedAt)}
               </ThemedText>
-            </XStack>
-          </YStack>
+              <ThemedText
+                type="metadata"
+                themeColor="textSecondary"
+                numberOfLines={1}
+              >
+                {formatFileSize(item.sizeBytes)} · Saved offline
+              </ThemedText>
+              <XStack alignItems="center" gap={Spacing.one}>
+                <View
+                  width={7}
+                  height={7}
+                  borderRadius={7}
+                  backgroundColor={
+                    item.isPlayed ? '$success' : isActive ? '$accent' : '$warning'
+                  }
+                />
+                <ThemedText
+                  type="metadata"
+                  color={
+                    item.isPlayed
+                      ? '$success'
+                      : isActive
+                        ? '$accent'
+                        : '$colorMuted'
+                  }
+                >
+                  {item.isPlayed
+                    ? 'Played'
+                    : isActive
+                      ? isPlaying
+                        ? 'Playing'
+                        : 'In progress'
+                      : progress > 0
+                        ? 'In progress'
+                        : 'Unplayed'}
+                </ThemedText>
+              </XStack>
+            </YStack>
+          </AppButton>
 
           <YStack flexShrink={0} alignItems="center" gap={Spacing.two} pt={30}>
             <ThemedText type="metadata" themeColor="textSecondary">
