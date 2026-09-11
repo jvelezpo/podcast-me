@@ -151,6 +151,9 @@ class PodcastMediaLibraryService : MediaLibraryService() {
       )
     }
     session = builder.build()
+    // Phone commands bypass onGetSession, so register for Media3 notifications
+    // and foreground playback even when no car/browser controller connects.
+    addSession(session)
     activeService = WeakReference(this)
     notifyPlaybackState()
   }
@@ -533,14 +536,7 @@ class PodcastMediaLibraryService : MediaLibraryService() {
     ) {
       Handler(Looper.getMainLooper()).post {
         playbackStateObserver = observer
-        val service = activeService?.get()
-        if (service == null) {
-          context.applicationContext.startService(
-            Intent(context.applicationContext, PodcastMediaLibraryService::class.java),
-          )
-        } else {
-          service.notifyPlaybackState()
-        }
+        observer(currentPlaybackState(context))
       }
     }
 
@@ -552,8 +548,15 @@ class PodcastMediaLibraryService : MediaLibraryService() {
       }
     }
 
-    fun currentPlaybackState(): Map<String, Any?> =
-      activeService?.get()?.playbackState() ?: unavailablePlaybackState()
+    fun currentPlaybackState(context: android.content.Context): Map<String, Any?> {
+      activeService?.get()?.let { return it.playbackState() }
+      // Foreground state refreshes must recover a service stopped by Android.
+      // onCreate publishes the ready state to the existing observer.
+      context.applicationContext.startService(
+        Intent(context.applicationContext, PodcastMediaLibraryService::class.java),
+      )
+      return unavailablePlaybackState()
+    }
 
     fun playFromPhone(mediaId: String, positionMs: Long, rate: Float): Boolean =
       activeService?.get()?.playFromPhone(mediaId, positionMs, rate) ?: false

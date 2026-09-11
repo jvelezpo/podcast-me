@@ -1,7 +1,11 @@
 package expo.modules.androidauto
 
+import android.app.ActivityManager
+import android.app.Activity
 import android.content.ComponentName
+import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -28,6 +32,76 @@ import java.util.concurrent.atomic.AtomicReference
 @OptIn(UnstableApi::class)
 @RunWith(AndroidJUnit4::class)
 class PodcastMediaLibraryServiceInstrumentedTest {
+  @Test
+  fun phonePlaybackStaysInForegroundWithoutACarAndRecoversAfterServiceStops() {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val context = instrumentation.targetContext
+    val activityIntent = Intent(context, Activity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    var activity = instrumentation.startActivitySync(activityIntent)
+    val serviceIntent = Intent(context, PodcastMediaLibraryService::class.java)
+    context.stopService(serviceIntent)
+    InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+    val audioFile = File(context.filesDir, "phone-background-test.wav")
+      .apply { writeBytes(silentWave(durationSeconds = 180)) }
+    AndroidAutoStore.syncLibrary(
+      context,
+      JSONArray().put(JSONObject().apply {
+        put("id", "phone-test")
+        put("originalName", "Phone test.wav")
+        put("localUri", audioFile.toURI().toString())
+        put("mimeType", "audio/wav")
+        put("durationSeconds", 180.0)
+        put("lastPositionSeconds", 0.0)
+        put("isPlayed", false)
+        put("updatedAt", "2026-09-09T12:00:00.000Z")
+      }).toString(),
+    )
+    val observedState = AtomicReference<Map<String, Any?>>(emptyMap())
+    val observer: (Map<String, Any?>) -> Unit = observedState::set
+    try {
+      // Match the phone bridge without connecting a car/browser controller.
+      PodcastMediaLibraryService.observePlaybackState(context, observer)
+      awaitCondition { observedState.get()["serviceReady"] == true }
+      assertTrue(onMainThread {
+        PodcastMediaLibraryService.playFromPhone("phone-test", 0, 1f)
+      })
+      awaitCondition { observedState.get()["isPlaying"] == true }
+      val activityManager = context.getSystemService(ActivityManager::class.java)
+      awaitCondition {
+        activityManager.getRunningServices(Int.MAX_VALUE).any {
+          it.service.className == PodcastMediaLibraryService::class.java.name && it.foreground
+        }
+      }
+      onMainThread { activity.finish() }
+      instrumentation.waitForIdleSync()
+
+      // Exercise the reported roughly one-minute background cutoff.
+      Thread.sleep(75_000)
+      assertEquals(true, observedState.get()["isPlaying"])
+      assertTrue((observedState.get()["currentPositionSeconds"] as Double) >= 70)
+
+      context.stopService(serviceIntent)
+      awaitCondition { observedState.get()["serviceReady"] == false }
+      activity = instrumentation.startActivitySync(activityIntent)
+      onMainThread { PodcastMediaLibraryService.currentPlaybackState(context) }
+      awaitCondition { observedState.get()["serviceReady"] == true }
+      assertEquals(false, observedState.get()["isPlaying"])
+      val savedPosition = AndroidAutoStore.catalog(context).single().positionMs
+      assertTrue(savedPosition >= 70_000)
+      assertTrue(onMainThread {
+        PodcastMediaLibraryService.playFromPhone("phone-test", savedPosition, 1f)
+      })
+      awaitCondition { observedState.get()["isPlaying"] == true }
+      assertTrue((observedState.get()["currentPositionSeconds"] as Double) >= 70)
+    } finally {
+      PodcastMediaLibraryService.removePlaybackStateObserver(observer)
+      context.stopService(serviceIntent)
+      onMainThread { activity.finish() }
+      InstrumentationRegistry.getInstrumentation().waitForIdleSync()
+      audioFile.delete()
+    }
+  }
+
   @Test
   fun mediaBrowserCanDiscoverSyncedRecordings() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -137,6 +211,14 @@ class PodcastMediaLibraryServiceInstrumentedTest {
       onMainThread { browser.release() }
       audioFile.delete()
     }
+  }
+
+  private fun awaitCondition(condition: () -> Boolean) {
+    val deadline = SystemClock.elapsedRealtime() + 10_000
+    while (!condition() && SystemClock.elapsedRealtime() < deadline) {
+      Thread.sleep(100)
+    }
+    assertTrue("Timed out waiting for playback service state", condition())
   }
 
   private fun <T> onMainThread(block: () -> T): T {

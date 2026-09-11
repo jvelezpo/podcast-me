@@ -43,7 +43,7 @@ class AndroidAutoModule : Module() {
     }
 
     AsyncFunction("getPlaybackState") {
-      PodcastMediaLibraryService.currentPlaybackState()
+      PodcastMediaLibraryService.currentPlaybackState(requireNotNull(appContext.reactContext))
     }.runOnQueue(Queues.MAIN)
 
     AsyncFunction("playItem") { mediaId: String, positionSeconds: Double, rate: Double ->

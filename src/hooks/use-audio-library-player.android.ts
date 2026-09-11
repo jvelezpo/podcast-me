@@ -73,21 +73,34 @@ export function useAudioLibraryPlayer(
 
   useEffect(() => {
     let isMounted = true;
+    let stateRevision = 0;
     const subscription = observeAndroidAutoPlaybackState((nextState) => {
       if (isMounted) {
+        stateRevision += 1;
         applyPlaybackState(nextState);
       }
     });
 
-    void getAndroidAutoPlaybackState().then((nextState) => {
-      if (isMounted) {
-        applyPlaybackState(nextState);
+    const refreshPlaybackState = () => {
+      const revision = stateRevision;
+      void getAndroidAutoPlaybackState().then((nextState) => {
+        // A service restart can publish a newer ready event before this resolves.
+        if (isMounted && revision === stateRevision) {
+          applyPlaybackState(nextState);
+        }
+      });
+    };
+    refreshPlaybackState();
+    const appStateSubscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        refreshPlaybackState();
       }
     });
 
     return () => {
       isMounted = false;
       subscription.remove();
+      appStateSubscription.remove();
     };
   }, [applyPlaybackState]);
 
