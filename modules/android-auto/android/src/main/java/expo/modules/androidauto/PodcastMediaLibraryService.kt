@@ -1,14 +1,22 @@
 package expo.modules.androidauto
 
+import android.app.ForegroundServiceStartNotAllowedException
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.annotation.OptIn
+import androidx.annotation.RequiresApi
+import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
@@ -16,10 +24,12 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
 import androidx.media3.session.MediaConstants
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaStyleNotificationHelper
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.google.common.collect.ImmutableList
@@ -66,7 +76,7 @@ private fun skipCommand(action: String, icon: Int) = SessionCommand(
 
 @OptIn(UnstableApi::class)
 class PodcastMediaLibraryService : MediaLibraryService() {
-  private lateinit var player: ExoPlayer
+  private lateinit var player: Player
   private lateinit var session: MediaLibrarySession
   private val handler = Handler(Looper.getMainLooper())
   private val artworkUri by lazy {
@@ -135,6 +145,19 @@ class PodcastMediaLibraryService : MediaLibraryService() {
       .setSeekBackIncrementMs(SEEK_INCREMENT_MS)
       .setSeekForwardIncrementMs(SEEK_INCREMENT_MS)
       .build()
+      .let { exoPlayer ->
+        object : ForwardingPlayer(exoPlayer) {
+          override fun play() = setPlayWhenReady(true)
+
+          override fun setPlayWhenReady(playWhenReady: Boolean) {
+            if (playWhenReady && Build.VERSION.SDK_INT >= 35) {
+              // Android 15 requires foreground status before requesting audio focus.
+              if (!startForegroundForPlayback()) return
+            }
+            super.setPlayWhenReady(playWhenReady)
+          }
+        }
+      }
       .also { it.addListener(playerListener) }
 
     val builder = MediaLibrarySession.Builder(this, player, LibraryCallback())
@@ -160,6 +183,37 @@ class PodcastMediaLibraryService : MediaLibraryService() {
 
   override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession =
     session
+
+  @RequiresApi(35)
+  private fun startForegroundForPlayback(): Boolean {
+    if (isPlaybackOngoing || player.currentMediaItem == null) return true
+    val channelId = DefaultMediaNotificationProvider.DEFAULT_CHANNEL_ID
+    getSystemService(NotificationManager::class.java).createNotificationChannel(
+      NotificationChannel(
+        channelId,
+        getString(DefaultMediaNotificationProvider.DEFAULT_CHANNEL_NAME_RESOURCE_ID),
+        NotificationManager.IMPORTANCE_LOW,
+      ),
+    )
+    // Media3 replaces this notification with its normal controls once its
+    // asynchronous notification controller has received the new playlist.
+    return try {
+      startForeground(
+        DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID,
+        NotificationCompat.Builder(this, channelId)
+          .setSmallIcon(R.drawable.ic_android_auto_attribution)
+          .setContentTitle(player.mediaMetadata.title ?: "Podcast Me")
+          .setContentIntent(session.sessionActivity)
+          .setStyle(MediaStyleNotificationHelper.MediaStyle(session))
+          .setOngoing(true)
+          .build(),
+      )
+      true
+    } catch (error: ForegroundServiceStartNotAllowedException) {
+      Log.w("PodcastMediaLibrary", "Android blocked background playback startup", error)
+      false
+    }
+  }
 
   override fun onDestroy() {
     handler.removeCallbacks(checkpoint)

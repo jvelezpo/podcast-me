@@ -86,7 +86,23 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 For a real car, enable Android Auto developer mode and **Unknown sources** in Android Auto's
-developer settings so it can list a locally installed APK. For the Desktop Head Unit (DHU), also
+developer settings so it can list a locally installed APK. This also applies to signed production
+APKs built with EAS; a production build is still sideloaded when installed directly. This is an
+Android Auto setting, separate from Android's permission to install APKs.
+
+If the app disappears from the car launcher or Android Auto says **opened on phone**:
+
+1. Check the installed app and version on the phone. **Podcast Me** and **Podcast Me Dev** are
+   separate installations; updating one does not update the other.
+2. In Android Auto settings, tap the version information 10 times to enable developer mode,
+   then open the overflow menu, choose **Developer settings**, and enable **Unknown sources**.
+3. Open the updated phone app once, then check **Customize launcher** in Android Auto settings
+   and enable the matching app. Disconnect and reconnect Android Auto.
+
+Android Auto controls whether sideloaded apps appear; the app cannot enable this setting itself.
+See Google's [trusted-source and developer-mode requirements](https://developer.android.com/training/cars/testing#unknown-sources).
+
+For the Desktop Head Unit (DHU), also
 start the head unit server in those settings, connect the phone over USB, then run:
 
 ```bash
@@ -104,8 +120,16 @@ cd android
 ./gradlew :android-auto:connectedDebugAndroidTest
 ```
 
-The connected test starts the actual service on the attached Android device and browses the same
-root/category/recording hierarchy used by Android Auto. See the official
+The connected tests cover both Media3 and the platform MediaBrowser interface used by Android
+Auto. They verify manifest discovery and the media descriptor, browse recordings and start
+playback without opening a phone activity, and exercise resume position, pause, seek, and the
+15-second car controls. They also cover phone/car synchronization and sustained background
+playback. These tests do not verify Android Auto's launcher or its trusted-source filtering.
+The cold-launch test runs first so a phone activity from another test cannot mask Android 15's
+audio-focus restriction. The service enters the foreground before requesting focus on Android
+15 and later, then Media3 replaces the startup notification with the regular playback controls.
+Rebuild and reinstall the native APK to apply this change; a JavaScript reload is insufficient.
+See the official
 [Android Auto DHU instructions](https://developer.android.com/training/cars/testing/dhu) and
 [media app testing guide](https://developer.android.com/training/cars/testing/media).
 
