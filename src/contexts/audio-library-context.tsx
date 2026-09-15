@@ -8,34 +8,49 @@ import {
 
 import { useAudioLibrary } from '@/hooks/use-audio-library'
 import { useAudioLibraryPlayer } from '@/hooks/use-audio-library-player'
+import { useRemoteAudioPlayer } from '@/hooks/use-remote-audio-player'
+import { useAuth } from '@/contexts/auth-context'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
+import type { RemoteAudio } from '@/services/api'
+
+type PlayerItem =
+  | { kind: 'local'; item: LoadedAudioItem }
+  | { kind: 'remote'; audio: RemoteAudio }
 
 type AudioLibraryContextValue = {
   library: ReturnType<typeof useAudioLibrary>
   playback: ReturnType<typeof useAudioLibraryPlayer>
+  remotePlayback: ReturnType<typeof useRemoteAudioPlayer>
   isPlayerOpen: boolean
-  playerItemId: string | null
+  playerItem: PlayerItem | null
   openPlayer: (item: LoadedAudioItem) => void
+  openRemotePlayer: (audio: RemoteAudio) => void
   closePlayer: () => void
 }
 
 const AudioLibraryContext = createContext<AudioLibraryContextValue | null>(null)
 
 export function AudioLibraryProvider({ children }: PropsWithChildren) {
+  const { getRemoteAudioStreamSource } = useAuth()
   const library = useAudioLibrary()
   const playback = useAudioLibraryPlayer(
     library.updateAudioItem,
     !library.isLoading,
   )
+  const remotePlayback = useRemoteAudioPlayer(getRemoteAudioStreamSource)
   const [isPlayerOpen, setIsPlayerOpen] = useState(false)
-  const [playerItemId, setPlayerItemId] = useState<string | null>(null)
+  const [playerItem, setPlayerItem] = useState<PlayerItem | null>(null)
   const openPlayer = useCallback((item: LoadedAudioItem) => {
-    setPlayerItemId(item.id)
+    setPlayerItem({ kind: 'local', item })
+    setIsPlayerOpen(true)
+  }, [])
+  const openRemotePlayer = useCallback((audio: RemoteAudio) => {
+    setPlayerItem({ kind: 'remote', audio })
     setIsPlayerOpen(true)
   }, [])
   const closePlayer = useCallback(() => {
     setIsPlayerOpen(false)
-    setPlayerItemId(null)
+    setPlayerItem(null)
   }, [])
 
   return (
@@ -43,9 +58,11 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
       value={{
         library,
         playback,
+        remotePlayback,
         isPlayerOpen,
-        playerItemId,
+        playerItem,
         openPlayer,
+        openRemotePlayer,
         closePlayer,
       }}
     >

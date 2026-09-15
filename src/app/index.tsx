@@ -1,10 +1,12 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
+import { useNetworkState } from 'expo-network'
 import { useEffect, useRef, useState } from 'react'
 import { Alert, FlatList, Platform, StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
 import { AudioLibraryRow } from '@/components/audio-library-row'
+import { RemoteAudioRow } from '@/components/remote-audio-row'
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
 import { AppButton } from '@/components/ui/app-button'
@@ -16,15 +18,24 @@ import {
   Spacing,
 } from '@/constants/theme'
 import { useAudioLibraryContext } from '@/contexts/audio-library-context'
+import { useAuth } from '@/contexts/auth-context'
 import { useTheme } from '@/hooks/use-theme'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
+import type { RemoteAudio } from '@/services/api'
 import { formatPlaybackTime } from '@/utils/audio-display'
 
+type CollectionItem =
+  | { kind: 'local'; item: LoadedAudioItem }
+  | { kind: 'remote'; audio: RemoteAudio }
+
 export default function HomeScreen() {
-  const { library, playback, openPlayer } = useAudioLibraryContext()
+  const { library, playback, openPlayer, openRemotePlayer, remotePlayback } =
+    useAudioLibraryContext()
+  const { loadRemoteAudios, user } = useAuth()
   const media = useMedia()
   const theme = useTheme()
-  const listRef = useRef<FlatList<LoadedAudioItem>>(null)
+  const networkState = useNetworkState()
+  const listRef = useRef<FlatList<CollectionItem>>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -34,12 +45,21 @@ export default function HomeScreen() {
     null,
   )
   const [highlightToken, setHighlightToken] = useState(0)
+  const [remoteAudios, setRemoteAudios] = useState<RemoteAudio[]>([])
   const isLibraryBusy = library.importPhase !== 'idle' || library.isMutating
+  const isOffline =
+    networkState.isConnected === false ||
+    networkState.isInternetReachable === false
+  const isOnline = networkState.isConnected === true && !isOffline
   const hasPlayer = playback.activeItemId !== null
   const totalDuration = library.items.reduce(
     (total, item) => total + (item.durationSeconds ?? 0),
     0,
   )
+  const collectionItems: CollectionItem[] = [
+    ...library.items.map((item) => ({ kind: 'local' as const, item })),
+    ...remoteAudios.map((audio) => ({ kind: 'remote' as const, audio })),
+  ]
   const contentContainerStyle = {
     flexGrow: 1,
     width: '100%' as const,
@@ -58,6 +78,34 @@ export default function HomeScreen() {
       if (scrollRetryTimerRef.current) clearTimeout(scrollRetryTimerRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    if (!isOnline || !user) {
+      remotePlayback.stop()
+      setRemoteAudios([])
+      return () => {
+        isMounted = false
+      }
+    }
+
+    void loadRemoteAudios()
+      .then((audios) => {
+        if (isMounted) {
+          setRemoteAudios(audios)
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setRemoteAudios([])
+        }
+      })
+
+    return () => {
+      isMounted = false
+    }
+  }, [isOnline, loadRemoteAudios, remotePlayback.stop, user])
 
   const showToast = (message: string) => {
     if (toastTimerRef.current) {
@@ -163,18 +211,41 @@ export default function HomeScreen() {
     )
   }
 
+  const handleToggleLocalPlayback = (item: LoadedAudioItem) => {
+    if (remotePlayback.activeAudioId || remotePlayback.isTransitioning) {
+      remotePlayback.stop()
+    }
+
+    playback.togglePlayback(item)
+  }
+
+  const handleToggleRemotePlayback = async (audio: RemoteAudio) => {
+    if (remotePlayback.activeAudioId !== audio.id && playback.activeItemId) {
+      const didStopLocalPlayback = await playback.dismissPlayer()
+
+      if (!didStopLocalPlayback) {
+        return
+      }
+    }
+
+    remotePlayback.togglePlayback(audio)
+  }
+
   return (
     <ThemedView flex={1}>
       <SafeAreaView style={styles.safeArea}>
-        <FlatList
+        <FlatList<CollectionItem>
           ref={listRef}
-          data={library.items}
-          keyExtractor={(item) => item.id}
+          data={collectionItems}
+          keyExtractor={(item) =>
+            `${item.kind}-${item.kind === 'local' ? item.item.id : item.audio.id}`
+          }
           style={styles.list}
           contentContainerStyle={contentContainerStyle}
           ItemSeparatorComponent={() => <View height={Spacing.three} />}
           ListHeaderComponent={
             <YStack gap={Spacing.four} marginBottom={Spacing.four}>
+              {isOffline && <OfflineNotice />}
               <XStack
                 alignItems="flex-end"
                 justifyContent="space-between"
@@ -182,9 +253,20 @@ export default function HomeScreen() {
                 $compact={{ flexDirection: 'column', alignItems: 'stretch' }}
               >
                 <YStack flex={1} gap={Spacing.one}>
-                  <ThemedText type="eyebrow" themeColor="accent">
-                    Your collection
-                  </ThemedText>
+                  <XStack alignItems="center" gap={Spacing.two}>
+                    <ThemedText type="eyebrow" themeColor="accent">
+                      Your collection
+                    </ThemedText>
+                    {isOnline && (
+                      <View
+                        width={8}
+                        height={8}
+                        borderRadius={8}
+                        backgroundColor="$success"
+                        accessibilityLabel="Internet connected"
+                      />
+                    )}
+                  </XStack>
                   <ThemedText
                     type="title"
                     $compact={{ fontSize: 36, lineHeight: 42 }}
@@ -352,18 +434,39 @@ export default function HomeScreen() {
             }, 250)
           }}
           renderItem={({ item }) => {
-            const isActive = playback.activeItemId === item.id
+            if (item.kind === 'remote') {
+              return (
+                <RemoteAudioRow
+                  audio={item.audio}
+                  isActive={remotePlayback.activeAudioId === item.audio.id}
+                  isPlaying={remotePlayback.isPlaying}
+                  isTransitioning={remotePlayback.isTransitioning}
+                  playbackError={
+                    remotePlayback.playbackError?.audioId === item.audio.id
+                      ? remotePlayback.playbackError.message
+                      : null
+                  }
+                  onOpenPlayer={openRemotePlayer}
+                  onTogglePlayback={(audio) =>
+                    void handleToggleRemotePlayback(audio)
+                  }
+                />
+              )
+            }
+
+            const localItem = item.item
+            const isActive = playback.activeItemId === localItem.id
 
             return (
               <AudioLibraryRow
-                item={item}
+                item={localItem}
                 isActive={isActive}
                 isPlaying={isActive && playback.isPlaying}
                 isTransitioning={playback.isTransitioning}
                 isPlaybackReady={playback.isReady}
                 currentPositionSeconds={playback.currentPositionSeconds}
                 duplicateHighlightToken={
-                  highlightedItemId === item.id ? highlightToken : 0
+                  highlightedItemId === localItem.id ? highlightToken : 0
                 }
                 isDeleteDisabled={isLibraryBusy || playback.isTransitioning}
                 isReorderDisabled={isLibraryBusy || library.items.length < 2}
@@ -374,7 +477,7 @@ export default function HomeScreen() {
                 onReorder={(itemId, offset) =>
                   void library.reorderAudio(itemId, offset)
                 }
-                onTogglePlayback={playback.togglePlayback}
+                onTogglePlayback={handleToggleLocalPlayback}
               />
             )
           }}
@@ -404,6 +507,29 @@ function findNextPlayableItem(
       .reverse()
       .find((item) => item.isAvailable) ??
     null
+  )
+}
+
+function OfflineNotice() {
+  return (
+    <ThemedView
+      accessibilityLiveRegion="polite"
+      accessibilityRole="alert"
+      flexDirection="row"
+      alignItems="center"
+      gap={Spacing.two}
+      paddingHorizontal={Spacing.three}
+      paddingVertical={Spacing.two}
+      borderWidth={1}
+      borderColor="$danger"
+      borderRadius={Radius.medium}
+      backgroundColor="$backgroundElement"
+    >
+      <View width={8} height={8} borderRadius={8} backgroundColor="$danger" />
+      <ThemedText type="smallBold" color="$danger">
+        no internet connection
+      </ThemedText>
+    </ThemedView>
   )
 }
 

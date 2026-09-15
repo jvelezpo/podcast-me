@@ -42,6 +42,7 @@ module.exports = ({ config: productionConfig }) => ({
   },
   plugins: [
     ...productionConfig.plugins,
+    'expo-secure-store',
     [
       'expo-dev-client',
       {
@@ -52,5 +53,6 @@ module.exports = ({ config: productionConfig }) => ({
   extra: {
     ...productionConfig.extra,
     appVariant,
+    apiOrigin: process.env.EXPO_PUBLIC_API_ORIGIN,
   },
 });

@@ -1,5 +1,5 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   Modal,
@@ -24,6 +24,7 @@ import {
 } from '@/constants/theme'
 import { useAudioLibraryContext } from '@/contexts/audio-library-context'
 import { useTheme } from '@/hooks/use-theme'
+import type { RemoteAudio } from '@/services/api'
 import {
   formatEpisodeDate,
   formatPlaybackTime,
@@ -48,17 +49,23 @@ export function GlobalPlayer() {
   const {
     library,
     playback,
+    remotePlayback,
     closePlayer,
     isPlayerOpen,
     openPlayer,
-    playerItemId,
+    openRemotePlayer,
+    playerItem,
   } = useAudioLibraryContext()
   const activeItem =
     library.items.find((candidate) => candidate.id === playback.activeItemId) ??
     null
-  const item =
-    library.items.find((candidate) => candidate.id === playerItemId) ??
-    activeItem
+  const selectedLocalItem =
+    playerItem?.kind === 'local'
+      ? (library.items.find(
+          (candidate) => candidate.id === playerItem.item.id,
+        ) ?? playerItem.item)
+      : null
+  const item = selectedLocalItem ?? activeItem
   const [playerWidth, setPlayerWidth] = useState(0)
   const [sleepTimerEndsAt, setSleepTimerEndsAt] = useState<number | null>(null)
   const [sleepTimerDurationMinutes, setSleepTimerDurationMinutes] = useState<
@@ -213,6 +220,68 @@ export function GlobalPlayer() {
       onPanResponderTerminationRequest: () => true,
     })
   }, [swipeOffset])
+
+  const remoteItem =
+    playerItem?.kind === 'remote'
+      ? playerItem.audio
+      : playerItem?.kind === 'local'
+        ? null
+        : remotePlayback.activeAudio
+  const remotePlayingAudio = remotePlayback.isPlaying
+    ? remotePlayback.activeAudio
+    : null
+  const localPlayingBanner =
+    activeItem && playback.isPlaying ? (
+      <CurrentlyPlayingBanner
+        disabled={
+          playback.isTransitioning ||
+          !playback.isReady ||
+          !activeItem.isAvailable
+        }
+        itemId={activeItem.id}
+        name={activeItem.originalName}
+        onOpen={() => openPlayer(activeItem)}
+        onToggle={() => playback.togglePlayback(activeItem)}
+        tintColor={theme.accent}
+        title={getEpisodeTitle(activeItem.originalName)}
+      />
+    ) : null
+  const isViewingPlayingAudio =
+    isPlayerOpen &&
+    (remotePlayingAudio
+      ? playerItem?.kind === 'remote' &&
+        remotePlayingAudio.id === playerItem.audio.id
+      : playerItem?.kind === 'local' &&
+        activeItem?.id === playerItem.item.id &&
+        playback.isPlaying)
+  const playingBanner = isViewingPlayingAudio
+    ? null
+    : remotePlayingAudio
+      ? (
+          <CurrentlyPlayingBanner
+            disabled={remotePlayback.isTransitioning}
+            itemId={`remote-${remotePlayingAudio.id}`}
+            name={remotePlayingAudio.title}
+            onOpen={() => openRemotePlayer(remotePlayingAudio)}
+            onToggle={() => remotePlayback.togglePlayback(remotePlayingAudio)}
+            tintColor={theme.accent}
+            title={remotePlayingAudio.title}
+          />
+        )
+      : localPlayingBanner
+
+  if (remoteItem) {
+    return (
+      <RemotePlayerSurface
+        audio={remoteItem}
+        closePlayer={closePlayer}
+        isPlayerOpen={isPlayerOpen && playerItem?.kind === 'remote'}
+        openPlayer={openRemotePlayer}
+        playingBanner={playingBanner}
+        remotePlayback={remotePlayback}
+      />
+    )
+  }
 
   if (!item) {
     return null
@@ -425,67 +494,7 @@ export function GlobalPlayer() {
               <View width={44} />
             </XStack>
 
-            {activeItem && !isViewingActiveItem && (
-              <ThemedView
-                type="accent"
-                marginHorizontal={Spacing.one}
-                marginBottom={Spacing.two}
-                padding={Spacing.two}
-                borderWidth={1}
-                borderColor="$accentForeground"
-                borderRadius={Radius.large}
-                boxShadow="0 10px 24px rgba(0,0,0,0.28)"
-              >
-                <XStack alignItems="center" gap={Spacing.two}>
-                  <AppButton
-                    tone="ghost"
-                    accessibilityLabel={`Open now playing for ${getEpisodeTitle(activeItem.originalName)}`}
-                    onPress={() => openPlayer(activeItem)}
-                    minWidth={0}
-                    flex={1}
-                    justifyContent="flex-start"
-                    padding={0}
-                  >
-                    <EpisodeArtwork
-                      itemId={activeItem.id}
-                      name={activeItem.originalName}
-                      size={42}
-                    />
-                    <YStack flex={1} minWidth={0} alignItems="flex-start">
-                      <ThemedText type="metadata" color="$accentForeground">
-                        {playback.isPlaying ? 'Now playing' : 'Paused'}
-                      </ThemedText>
-                      <ThemedText
-                        type="smallBold"
-                        color="$accentForeground"
-                        numberOfLines={1}
-                        width="100%"
-                      >
-                        {getEpisodeTitle(activeItem.originalName)}
-                      </ThemedText>
-                    </YStack>
-                  </AppButton>
-                  <AppButton
-                    tone="icon"
-                    accessibilityLabel={
-                      playback.isPlaying
-                        ? 'Pause current audio'
-                        : 'Play current audio'
-                    }
-                    disabled={isDockDisabled}
-                    onPress={() => playback.togglePlayback(activeItem)}
-                    backgroundColor="$accentForeground"
-                  >
-                    <SymbolView
-                      name={playback.isPlaying ? PAUSE_ICON : PLAY_ICON}
-                      size={23}
-                      tintColor={theme.accent}
-                      weight="bold"
-                    />
-                  </AppButton>
-                </XStack>
-              </ThemedView>
-            )}
+            {playingBanner}
 
             <ScrollView
               flex={1}
@@ -770,6 +779,398 @@ export function GlobalPlayer() {
         </ThemedView>
       </Modal>
     </>
+  )
+}
+
+type RemotePlayerSurfaceProps = {
+  audio: RemoteAudio
+  closePlayer: () => void
+  isPlayerOpen: boolean
+  openPlayer: (audio: RemoteAudio) => void
+  playingBanner: ReactNode
+  remotePlayback: {
+    activeAudio: RemoteAudio | null
+    currentPositionSeconds: number
+    durationSeconds: number | null
+    isPlaying: boolean
+    isTransitioning: boolean
+    playbackError: { audioId: string; message: string } | null
+    playbackRate: number
+    pausePlayback: (audio: RemoteAudio) => void
+    resumePlayback: (audio: RemoteAudio) => void
+    seekBy: (offsetSeconds: number) => void
+    seekTo: (positionSeconds: number) => Promise<void>
+    setPlaybackRate: (rate: number) => void
+    togglePlayback: (audio: RemoteAudio) => void
+  }
+}
+
+function RemotePlayerSurface({
+  audio,
+  closePlayer,
+  isPlayerOpen,
+  openPlayer,
+  playingBanner,
+  remotePlayback,
+}: RemotePlayerSurfaceProps) {
+  const media = useMedia()
+  const theme = useTheme()
+  const wasPlayingBeforeScrubRef = useRef(false)
+  const isActive = remotePlayback.activeAudio?.id === audio.id
+  const duration = isActive ? remotePlayback.durationSeconds : null
+  const positionSeconds = isActive ? remotePlayback.currentPositionSeconds : 0
+  const progress = duration ? Math.min(positionSeconds / duration, 1) : 0
+  const isDisabled = remotePlayback.isTransitioning || !isActive
+  const artworkSize = media.short ? 220 : media.compact ? 276 : 340
+  const error =
+    remotePlayback.playbackError?.audioId === audio.id
+      ? remotePlayback.playbackError.message
+      : null
+
+  const handleScrubStart = () => {
+    wasPlayingBeforeScrubRef.current = remotePlayback.isPlaying
+
+    if (remotePlayback.isPlaying) {
+      remotePlayback.pausePlayback(audio)
+    }
+  }
+
+  const handleScrubEnd = () => {
+    if (wasPlayingBeforeScrubRef.current) {
+      remotePlayback.resumePlayback(audio)
+    }
+
+    wasPlayingBeforeScrubRef.current = false
+  }
+
+  return (
+    <>
+      {remotePlayback.activeAudio && (
+        <ThemedView
+          position="absolute"
+          zIndex={50}
+          right={Spacing.one}
+          bottom={BottomTabInset + Spacing.four}
+          left={Spacing.one}
+          maxWidth={Math.min(MaxContentWidth, 720)}
+          height={PlayerDockHeight}
+          alignSelf="center"
+          overflow="hidden"
+          borderWidth={1}
+          borderColor="$borderColor"
+          borderRadius={Radius.large}
+          boxShadow="0 12px 30px rgba(0,0,0,0.28)"
+        >
+          <XStack
+            flex={1}
+            alignItems="center"
+            gap={Spacing.two}
+            padding={Spacing.two}
+          >
+            <AppButton
+              tone="ghost"
+              accessibilityLabel={`Open now playing for ${audio.title}`}
+              onPress={() => openPlayer(audio)}
+              minWidth={0}
+              flex={1}
+              justifyContent="flex-start"
+              padding={0}
+            >
+              <EpisodeArtwork
+                itemId={`remote-${audio.id}`}
+                name={audio.title}
+                size={54}
+              />
+              <YStack flex={1} minWidth={0} alignItems="flex-start">
+                <ThemedText type="episodeTitle" numberOfLines={1} width="100%">
+                  {audio.title}
+                </ThemedText>
+                <ThemedText
+                  type="metadata"
+                  themeColor="textSecondary"
+                  numberOfLines={1}
+                >
+                  {remotePlayback.isTransitioning
+                    ? 'Loading remote stream…'
+                    : remotePlayback.isPlaying
+                      ? `${formatPlaybackTime(positionSeconds)} · Playing`
+                      : 'Paused'}
+                </ThemedText>
+              </YStack>
+            </AppButton>
+            <PlayerIconButton
+              accessibilityLabel={remotePlayback.isPlaying ? 'Pause' : 'Play'}
+              disabled={remotePlayback.isTransitioning}
+              icon={remotePlayback.isPlaying ? PAUSE_ICON : PLAY_ICON}
+              onPress={() => remotePlayback.togglePlayback(audio)}
+              tintColor={theme.accentForeground}
+            />
+          </XStack>
+          <View
+            position="absolute"
+            right={0}
+            bottom={0}
+            left={0}
+            height={3}
+            backgroundColor="$backgroundSelected"
+          >
+            <View
+              height="100%"
+              width={`${progress * 100}%`}
+              backgroundColor="$accent"
+            />
+          </View>
+        </ThemedView>
+      )}
+
+      <Modal
+        animationType="slide"
+        presentationStyle="fullScreen"
+        visible={isPlayerOpen}
+        onRequestClose={closePlayer}
+      >
+        <ThemedView flex={1}>
+          <SafeAreaView style={{ flex: 1 }}>
+            <XStack
+              alignItems="center"
+              justifyContent="space-between"
+              paddingHorizontal={Spacing.three}
+              paddingVertical={Spacing.two}
+            >
+              <AppButton
+                tone="icon"
+                accessibilityLabel="Close now playing"
+                onPress={closePlayer}
+              >
+                <SymbolView
+                  name={CLOSE_ICON}
+                  size={24}
+                  tintColor={theme.text}
+                  weight="semibold"
+                />
+              </AppButton>
+              <YStack alignItems="center">
+                <ThemedText type="eyebrow" themeColor="accent">
+                  Now playing
+                </ThemedText>
+                <ThemedText type="metadata" themeColor="textSecondary">
+                  Remote library
+                </ThemedText>
+              </YStack>
+              <View width={44} />
+            </XStack>
+
+            {playingBanner}
+
+            <ScrollView
+              flex={1}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{
+                alignItems: 'center',
+                paddingBottom: Spacing.four,
+              }}
+            >
+              <YStack
+                width="100%"
+                maxWidth={640}
+                flex={1}
+                alignItems="center"
+                gap={media.short ? Spacing.three : Spacing.four}
+                paddingHorizontal={Spacing.four}
+                paddingTop={media.short ? Spacing.one : Spacing.three}
+              >
+                <ThemedView
+                  type="backgroundElement"
+                  padding={Spacing.three}
+                  borderRadius={Radius.large}
+                  borderWidth={1}
+                  borderColor="$borderColor"
+                  boxShadow="0 22px 50px rgba(0,0,0,0.28)"
+                >
+                  <EpisodeArtwork
+                    itemId={`remote-${audio.id}`}
+                    name={audio.title}
+                    size={artworkSize}
+                  />
+                </ThemedView>
+
+                <YStack width="100%" alignItems="center" gap={Spacing.one}>
+                  <ThemedText
+                    type="heading"
+                    textAlign="center"
+                    numberOfLines={3}
+                    $compact={{ fontSize: 22, lineHeight: 28 }}
+                  >
+                    {audio.title}
+                  </ThemedText>
+                  <ThemedText type="default" themeColor="textSecondary">
+                    Remote stream · Available while connected
+                  </ThemedText>
+                  <XStack
+                    alignItems="center"
+                    gap={Spacing.one}
+                    marginTop={Spacing.one}
+                  >
+                    <View
+                      width={7}
+                      height={7}
+                      borderRadius={7}
+                      backgroundColor="$accent"
+                    />
+                    <ThemedText type="metadata" themeColor="textSecondary">
+                      Streaming
+                    </ThemedText>
+                  </XStack>
+                </YStack>
+
+                <YStack width="100%" gap={Spacing.two}>
+                  <AudioPlaybackSlider
+                    accessibilityLabel={`${audio.title} playback position`}
+                    bufferedSeconds={duration}
+                    disabled={isDisabled || duration === null}
+                    durationSeconds={duration}
+                    onScrubEnd={handleScrubEnd}
+                    onScrubStart={handleScrubStart}
+                    onSeekTo={remotePlayback.seekTo}
+                    positionSeconds={positionSeconds}
+                  />
+                  {error ? (
+                    <ThemedText
+                      type="metadata"
+                      color="$danger"
+                      textAlign="center"
+                    >
+                      {error}
+                    </ThemedText>
+                  ) : null}
+                </YStack>
+
+                <XStack
+                  width="100%"
+                  alignItems="center"
+                  justifyContent="space-around"
+                >
+                  <TransportButton
+                    accessibilityLabel="Rewind 15 seconds"
+                    disabled={isDisabled}
+                    label="15"
+                    icon={REWIND_ICON}
+                    onPress={() => remotePlayback.seekBy(-15)}
+                    tintColor={theme.text}
+                  />
+                  <PlayerIconButton
+                    large
+                    accessibilityLabel={
+                      remotePlayback.isPlaying ? 'Pause' : 'Play'
+                    }
+                    disabled={remotePlayback.isTransitioning}
+                    icon={remotePlayback.isPlaying ? PAUSE_ICON : PLAY_ICON}
+                    onPress={() => remotePlayback.togglePlayback(audio)}
+                    tintColor={theme.accentForeground}
+                  />
+                  <TransportButton
+                    accessibilityLabel="Forward 15 seconds"
+                    disabled={isDisabled}
+                    label="15"
+                    icon={FORWARD_ICON}
+                    onPress={() => remotePlayback.seekBy(15)}
+                    tintColor={theme.text}
+                  />
+                </XStack>
+
+                <AppButton
+                  tone="secondary"
+                  accessibilityLabel={`Playback speed ${remotePlayback.playbackRate} times`}
+                  onPress={() =>
+                    remotePlayback.setPlaybackRate(
+                      nextPlaybackRate(remotePlayback.playbackRate),
+                    )
+                  }
+                >
+                  <ThemedText type="smallBold">
+                    {remotePlayback.playbackRate}× speed
+                  </ThemedText>
+                </AppButton>
+              </YStack>
+            </ScrollView>
+          </SafeAreaView>
+        </ThemedView>
+      </Modal>
+    </>
+  )
+}
+
+type CurrentlyPlayingBannerProps = {
+  disabled: boolean
+  itemId: string
+  name: string
+  onOpen: () => void
+  onToggle: () => void
+  tintColor: string
+  title: string
+}
+
+function CurrentlyPlayingBanner({
+  disabled,
+  itemId,
+  name,
+  onOpen,
+  onToggle,
+  tintColor,
+  title,
+}: CurrentlyPlayingBannerProps) {
+  return (
+    <ThemedView
+      type="accent"
+      marginHorizontal={Spacing.one}
+      marginBottom={Spacing.two}
+      padding={Spacing.two}
+      borderWidth={1}
+      borderColor="$accentForeground"
+      borderRadius={Radius.large}
+      boxShadow="0 10px 24px rgba(0,0,0,0.28)"
+    >
+      <XStack alignItems="center" gap={Spacing.two}>
+        <AppButton
+          tone="ghost"
+          accessibilityLabel={`Open now playing for ${title}`}
+          onPress={onOpen}
+          minWidth={0}
+          flex={1}
+          justifyContent="flex-start"
+          padding={0}
+        >
+          <EpisodeArtwork itemId={itemId} name={name} size={42} />
+          <YStack flex={1} minWidth={0} alignItems="flex-start">
+            <ThemedText type="metadata" color="$accentForeground">
+              Now playing
+            </ThemedText>
+            <ThemedText
+              type="smallBold"
+              color="$accentForeground"
+              numberOfLines={1}
+              width="100%"
+            >
+              {title}
+            </ThemedText>
+          </YStack>
+        </AppButton>
+        <AppButton
+          tone="icon"
+          accessibilityLabel="Pause current audio"
+          disabled={disabled}
+          onPress={onToggle}
+          backgroundColor="$accentForeground"
+        >
+          <SymbolView
+            name={PAUSE_ICON}
+            size={23}
+            tintColor={tintColor}
+            weight="bold"
+          />
+        </AppButton>
+      </XStack>
+    </ThemedView>
   )
 }
 

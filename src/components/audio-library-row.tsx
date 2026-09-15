@@ -276,7 +276,7 @@ export function AudioLibraryRow({
                 themeColor="textSecondary"
                 numberOfLines={1}
               >
-                {formatFileSize(item.sizeBytes)} · Saved offline
+                {formatFileSize(item.sizeBytes)} · Local · Saved offline
               </ThemedText>
               <XStack alignItems="center" gap={Spacing.one}>
                 <View
