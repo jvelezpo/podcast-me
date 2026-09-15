@@ -1,5 +1,25 @@
 export const AUDIO_LIBRARY_STORAGE_KEY = 'podcast-me.audio-library.v1';
 
+export type AudioMetadata = {
+  title: string | null;
+  artist: string | null;
+  album: string | null;
+  releaseYear: string | null;
+  genre: string | null;
+  coverArtUrl: string | null;
+  description: string | null;
+};
+
+export const EMPTY_AUDIO_METADATA: AudioMetadata = {
+  title: null,
+  artist: null,
+  album: null,
+  releaseYear: null,
+  genre: null,
+  coverArtUrl: null,
+  description: null,
+};
+
 /** Persisted metadata for one app-owned audio file. */
 export type AudioItem = {
   id: string;
@@ -15,6 +35,8 @@ export type AudioItem = {
   lastPositionSeconds: number;
   /** Whether the listener has completed this audio at least once. */
   isPlayed: boolean;
+  /** Optional listener-provided information about this audio. */
+  metadata: AudioMetadata;
   /** ISO 8601 timestamp for when the item was imported. */
   addedAt: string;
   /** ISO 8601 timestamp for the item's most recent metadata change. */

@@ -2,10 +2,16 @@ import { SymbolView, type SymbolViewProps } from 'expo-symbols'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
+  KeyboardAvoidingView,
+  Modal,
   PanResponder,
+  Platform,
+  StyleSheet,
+  TextInput,
   type AccessibilityActionEvent,
 } from 'react-native'
-import { View, XStack, YStack, styled } from 'tamagui'
+import { SafeAreaView } from 'react-native-safe-area-context'
+import { ScrollView, View, XStack, YStack, styled } from 'tamagui'
 
 import { EpisodeArtwork } from '@/components/episode-artwork'
 import { ThemedText } from '@/components/themed-text'
@@ -14,12 +20,13 @@ import { AppButton } from '@/components/ui/app-button'
 import { Radius, Spacing } from '@/constants/theme'
 import type { AudioPlaybackError } from '@/hooks/use-audio-library-player'
 import { useTheme } from '@/hooks/use-theme'
+import type { AudioMetadata } from '@/models/audio-item'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
 import {
+  getAudioItemTitle,
   formatEpisodeDate,
   formatFileSize,
   formatPlaybackTime,
-  getEpisodeTitle,
 } from '@/utils/audio-display'
 
 type AudioLibraryRowProps = {
@@ -33,10 +40,15 @@ type AudioLibraryRowProps = {
   playbackError: AudioPlaybackError | null
   duplicateHighlightToken: number
   isDeleteDisabled: boolean
+  isMetadataDisabled: boolean
   isReorderDisabled: boolean
   onDelete: (item: LoadedAudioItem) => void
   onOpenPlayer: (item: LoadedAudioItem) => void
   onReorder: (itemId: string, offset: number) => void
+  onSaveMetadata: (
+    itemId: string,
+    metadata: AudioMetadata,
+  ) => Promise<boolean>
   onTogglePlayback: (item: LoadedAudioItem) => void
 }
 
@@ -51,16 +63,19 @@ export function AudioLibraryRow({
   playbackError,
   duplicateHighlightToken,
   isDeleteDisabled,
+  isMetadataDisabled,
   isReorderDisabled,
   onDelete,
   onOpenPlayer,
   onReorder,
+  onSaveMetadata,
   onTogglePlayback,
 }: AudioLibraryRowProps) {
   const theme = useTheme()
   const [dragY] = useState(() => new Animated.Value(0))
   const [highlightProgress] = useState(() => new Animated.Value(0))
   const [isDragging, setIsDragging] = useState(false)
+  const [isMetadataModalOpen, setIsMetadataModalOpen] = useState(false)
   const [showActions, setShowActions] = useState(false)
   const dragDisabledRef = useRef(isReorderDisabled)
   const itemIdRef = useRef(item.id)
@@ -162,7 +177,14 @@ export function AudioLibraryRow({
   const isBusy = isActive && isTransitioning
   const isButtonDisabled =
     !isPlaybackReady || !item.isAvailable || isTransitioning
-  const title = getEpisodeTitle(item.originalName)
+  const title = getAudioItemTitle(item)
+  const metadataSummary = [
+    item.metadata.artist,
+    item.metadata.album,
+    item.metadata.releaseYear,
+  ]
+    .filter(Boolean)
+    .join(' · ')
   const highlightScale = highlightProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [1, 1.018],
@@ -183,13 +205,14 @@ export function AudioLibraryRow({
   }
 
   return (
-    <AnimatedView
-      borderRadius={Radius.large}
-      zIndex={isDragging ? 10 : 0}
-      opacity={isDragging ? 0.94 : 1}
-      boxShadow={isDragging ? '0 14px 28px rgba(0,0,0,0.28)' : undefined}
-      style={{ transform: [{ translateY: dragY }, { scale: highlightScale }] }}
-    >
+    <>
+      <AnimatedView
+        borderRadius={Radius.large}
+        zIndex={isDragging ? 10 : 0}
+        opacity={isDragging ? 0.94 : 1}
+        boxShadow={isDragging ? '0 14px 28px rgba(0,0,0,0.28)' : undefined}
+        style={{ transform: [{ translateY: dragY }, { scale: highlightScale }] }}
+      >
       <AnimatedView
         pointerEvents="none"
         position="absolute"
@@ -255,8 +278,9 @@ export function AudioLibraryRow({
             padding={0}
           >
             <EpisodeArtwork
+              imageUrl={item.metadata.coverArtUrl}
               itemId={item.id}
-              name={item.originalName}
+              name={title}
               size={76}
             />
 
@@ -269,7 +293,8 @@ export function AudioLibraryRow({
                 themeColor="textSecondary"
                 numberOfLines={1}
               >
-                Podcast Me · {formatEpisodeDate(item.addedAt)}
+                {metadataSummary ||
+                  `Podcast Me · ${formatEpisodeDate(item.addedAt)}`}
               </ThemedText>
               <ThemedText
                 type="metadata"
@@ -385,14 +410,30 @@ export function AudioLibraryRow({
             gap={Spacing.two}
             paddingHorizontal={Spacing.three}
             paddingBottom={Spacing.three}
-            $compact={{ flexDirection: 'column' }}
           >
+            <AppButton
+              tone="outlined"
+              accessibilityLabel={`Edit metadata for ${title}`}
+              accessibilityState={{ disabled: isMetadataDisabled }}
+              disabled={isMetadataDisabled}
+              onPress={() => setIsMetadataModalOpen(true)}
+              flex={1}
+              mt={5}
+            >
+              <SymbolView
+                name={EDIT_ICON}
+                size={17}
+                tintColor={theme.text}
+              />
+              <ThemedText type="smallBold">Edit metadata</ThemedText>
+            </AppButton>
             <AppButton
               tone="danger"
               accessibilityLabel={`Remove ${title}`}
               accessibilityState={{ disabled: isDeleteDisabled }}
               disabled={isDeleteDisabled}
               onPress={() => onDelete(item)}
+              flex={1}
               mt={5}
             >
               <SymbolView
@@ -407,8 +448,264 @@ export function AudioLibraryRow({
           </XStack>
         )}
       </ThemedView>
-    </AnimatedView>
+      </AnimatedView>
+
+      {isMetadataModalOpen && (
+        <AudioMetadataModal
+          item={item}
+          onClose={() => setIsMetadataModalOpen(false)}
+          onSave={onSaveMetadata}
+        />
+      )}
+    </>
   )
+}
+
+type MetadataDraft = Record<keyof AudioMetadata, string>
+
+type AudioMetadataModalProps = {
+  item: LoadedAudioItem
+  onClose: () => void
+  onSave: (itemId: string, metadata: AudioMetadata) => Promise<boolean>
+}
+
+function AudioMetadataModal({
+  item,
+  onClose,
+  onSave,
+}: AudioMetadataModalProps) {
+  const theme = useTheme()
+  const [draft, setDraft] = useState<MetadataDraft>(() =>
+    metadataToDraft(item.metadata),
+  )
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  const updateField = (field: keyof AudioMetadata, value: string) => {
+    setDraft((current) => ({ ...current, [field]: value }))
+    setSaveError(null)
+  }
+
+  const handleSave = async () => {
+    setIsSaving(true)
+    setSaveError(null)
+
+    const didSave = await onSave(item.id, metadataFromDraft(draft))
+
+    if (didSave) {
+      onClose()
+      return
+    }
+
+    setIsSaving(false)
+    setSaveError('Metadata could not be saved. Try again.')
+  }
+
+  return (
+    <Modal
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible
+      onRequestClose={() => {
+        if (!isSaving) onClose()
+      }}
+    >
+      <ThemedView flex={1}>
+        <SafeAreaView style={styles.safeArea}>
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            style={styles.safeArea}
+          >
+            <XStack
+              alignItems="center"
+              justifyContent="space-between"
+              gap={Spacing.two}
+              paddingHorizontal={Spacing.three}
+              paddingVertical={Spacing.two}
+            >
+              <AppButton
+                tone="ghost"
+                accessibilityLabel="Cancel metadata changes"
+                disabled={isSaving}
+                onPress={onClose}
+              >
+                <ThemedText type="smallBold">Cancel</ThemedText>
+              </AppButton>
+              <ThemedText type="heading">Audio metadata</ThemedText>
+              <AppButton
+                accessibilityLabel="Save audio metadata"
+                accessibilityState={{ busy: isSaving }}
+                disabled={isSaving}
+                onPress={() => void handleSave()}
+              >
+                <ThemedText type="smallBold" color="$accentForeground">
+                  {isSaving ? 'Saving…' : 'Save'}
+                </ThemedText>
+              </AppButton>
+            </XStack>
+
+            <ScrollView
+              flex={1}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.formContent}
+            >
+              <YStack
+                width="100%"
+                maxWidth={640}
+                alignSelf="center"
+                gap={Spacing.three}
+              >
+                <YStack gap={Spacing.one}>
+                  <ThemedText type="smallBold">
+                    Add as much or as little as you want
+                  </ThemedText>
+                  <ThemedText type="metadata" themeColor="textSecondary">
+                    Every field is optional. The original audio file is not
+                    modified.
+                  </ThemedText>
+                </YStack>
+
+                <MetadataInput
+                  label="Title"
+                  placeholder={getAudioItemTitle(item)}
+                  value={draft.title}
+                  onChangeText={(value) => updateField('title', value)}
+                />
+                <MetadataInput
+                  label="Artist or creator"
+                  placeholder="Artist, host, or creator"
+                  value={draft.artist}
+                  onChangeText={(value) => updateField('artist', value)}
+                />
+                <MetadataInput
+                  label="Album or show"
+                  placeholder="Album, podcast, or series"
+                  value={draft.album}
+                  onChangeText={(value) => updateField('album', value)}
+                />
+                <MetadataInput
+                  label="Release year"
+                  placeholder="2026"
+                  keyboardType="number-pad"
+                  value={draft.releaseYear}
+                  onChangeText={(value) => updateField('releaseYear', value)}
+                />
+                <MetadataInput
+                  label="Genre"
+                  placeholder="Music, technology, interview…"
+                  value={draft.genre}
+                  onChangeText={(value) => updateField('genre', value)}
+                />
+                <MetadataInput
+                  label="Artwork URL"
+                  placeholder="https://example.com/artwork.jpg"
+                  autoCapitalize="none"
+                  keyboardType="url"
+                  value={draft.coverArtUrl}
+                  onChangeText={(value) => updateField('coverArtUrl', value)}
+                />
+                <MetadataInput
+                  multiline
+                  label="Description or notes"
+                  placeholder="Add a description, credits, or personal notes"
+                  value={draft.description}
+                  onChangeText={(value) => updateField('description', value)}
+                />
+
+                {saveError ? (
+                  <ThemedText
+                    accessibilityLiveRegion="polite"
+                    type="metadata"
+                    color="$danger"
+                  >
+                    {saveError}
+                  </ThemedText>
+                ) : null}
+              </YStack>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </ThemedView>
+    </Modal>
+  )
+}
+
+type MetadataInputProps = {
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters'
+  keyboardType?: 'default' | 'number-pad' | 'url'
+  label: string
+  multiline?: boolean
+  onChangeText: (value: string) => void
+  placeholder: string
+  value: string
+}
+
+function MetadataInput({
+  autoCapitalize = 'sentences',
+  keyboardType = 'default',
+  label,
+  multiline = false,
+  onChangeText,
+  placeholder,
+  value,
+}: MetadataInputProps) {
+  const theme = useTheme()
+
+  return (
+    <YStack gap={Spacing.one}>
+      <ThemedText type="smallBold">{label}</ThemedText>
+      <TextInput
+        accessibilityLabel={label}
+        autoCapitalize={autoCapitalize}
+        keyboardType={keyboardType}
+        multiline={multiline}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={theme.textSecondary}
+        style={[
+          styles.input,
+          multiline && styles.multilineInput,
+          {
+            backgroundColor: theme.backgroundElement,
+            borderColor: theme.borderColor,
+            color: theme.text,
+          },
+        ]}
+        textAlignVertical={multiline ? 'top' : 'center'}
+        value={value}
+      />
+    </YStack>
+  )
+}
+
+function metadataToDraft(metadata: AudioMetadata): MetadataDraft {
+  return {
+    title: metadata.title ?? '',
+    artist: metadata.artist ?? '',
+    album: metadata.album ?? '',
+    releaseYear: metadata.releaseYear ?? '',
+    genre: metadata.genre ?? '',
+    coverArtUrl: metadata.coverArtUrl ?? '',
+    description: metadata.description ?? '',
+  }
+}
+
+function metadataFromDraft(draft: MetadataDraft): AudioMetadata {
+  return {
+    title: normalizeOptionalText(draft.title),
+    artist: normalizeOptionalText(draft.artist),
+    album: normalizeOptionalText(draft.album),
+    releaseYear: normalizeOptionalText(draft.releaseYear),
+    genre: normalizeOptionalText(draft.genre),
+    coverArtUrl: normalizeOptionalText(draft.coverArtUrl),
+    description: normalizeOptionalText(draft.description),
+  }
+}
+
+function normalizeOptionalText(value: string): string | null {
+  const normalized = value.trim()
+  return normalized || null
 }
 
 const REORDER_STEP_DISTANCE = 124
@@ -438,7 +735,32 @@ const DELETE_ICON: SymbolViewProps['name'] = {
   android: 'delete_outline',
   web: 'delete_outline',
 }
+const EDIT_ICON: SymbolViewProps['name'] = {
+  ios: 'pencil',
+  android: 'edit',
+  web: 'edit',
+}
 
 const AnimatedView = styled(Animated.View, {
   name: 'AnimatedView',
+})
+
+const styles = StyleSheet.create({
+  safeArea: { flex: 1 },
+  formContent: {
+    paddingHorizontal: Spacing.three,
+    paddingTop: Spacing.two,
+    paddingBottom: Spacing.five,
+  },
+  input: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: Radius.medium,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    fontSize: 16,
+  },
+  multilineInput: {
+    minHeight: 120,
+  },
 })

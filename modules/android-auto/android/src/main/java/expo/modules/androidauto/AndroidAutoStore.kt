@@ -98,7 +98,8 @@ internal object AndroidAutoStore {
         val value = array.optJSONObject(index) ?: continue
         val id = value.optString("id").trim()
         val originalTitle = value.optString("originalName").trim()
-        val title = originalTitle.withoutAudioFileExtension()
+        val metadataTitle = value.optJSONObject("metadata")?.optString("title")?.trim().orEmpty()
+        val title = metadataTitle.ifEmpty { originalTitle.withoutAudioFileExtension() }
         val uri = Uri.parse(value.optString("localUri"))
         val mimeType = if (value.isNull("mimeType")) "" else value.optString("mimeType").trim()
         val file = uri.path?.let(::File)

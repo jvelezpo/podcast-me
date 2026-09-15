@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
-import type { AudioItem } from '@/models/audio-item';
+import type { AudioItem, AudioMetadata } from '@/models/audio-item';
 import {
   addMissingContentFingerprints,
   deleteImportedAudioFiles,
@@ -365,6 +365,55 @@ export function useAudioLibrary() {
     }
   }, []);
 
+  const updateAudioMetadata = useCallback(async (
+    itemId: string,
+    metadata: AudioMetadata
+  ): Promise<boolean> => {
+    if (mutationInProgress.current || importInProgress.current) {
+      return false;
+    }
+
+    const previousItems = itemsRef.current;
+    const currentItem = previousItems.find((item) => item.id === itemId);
+
+    if (!currentItem) {
+      return false;
+    }
+
+    if (JSON.stringify(currentItem.metadata) === JSON.stringify(metadata)) {
+      return true;
+    }
+
+    const nextItems = previousItems.map((item) =>
+      item.id === itemId
+        ? { ...item, metadata, updatedAt: new Date().toISOString() }
+        : item
+    );
+
+    mutationInProgress.current = true;
+    setIsMutating(true);
+    setNotice(null);
+    itemsRef.current = nextItems;
+    setItems(nextItems);
+
+    try {
+      await saveAudioLibrary(nextItems);
+      return true;
+    } catch {
+      itemsRef.current = previousItems;
+      setItems(previousItems);
+      setNotice({
+        kind: 'error',
+        title: 'Metadata not saved',
+        message: 'The previous audio details were restored. Try again.',
+      });
+      return false;
+    } finally {
+      mutationInProgress.current = false;
+      setIsMutating(false);
+    }
+  }, []);
+
   const updateAudioItem = useCallback(
     async (itemId: string, update: AudioItemPlaybackUpdate): Promise<boolean> => {
       const currentItem = itemsRef.current.find((item) => item.id === itemId);
@@ -423,6 +472,7 @@ export function useAudioLibrary() {
     addAudio,
     removeAudio,
     reorderAudio,
+    updateAudioMetadata,
     updateAudioItem,
     dismissNotice: () => setNotice(null),
   };

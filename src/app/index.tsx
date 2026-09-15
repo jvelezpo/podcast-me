@@ -22,7 +22,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useTheme } from '@/hooks/use-theme'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
 import type { RemoteAudio } from '@/services/api'
-import { formatPlaybackTime } from '@/utils/audio-display'
+import { formatPlaybackTime, getAudioItemTitle } from '@/utils/audio-display'
 
 type CollectionItem =
   | { kind: 'local'; item: LoadedAudioItem }
@@ -199,7 +199,7 @@ export default function HomeScreen() {
   const confirmRemoveAudio = (item: LoadedAudioItem) => {
     Alert.alert(
       'Remove audio?',
-      `“${item.originalName}” will be removed from the playlist and permanently deleted from app storage.`,
+      `“${getAudioItemTitle(item)}” will be removed from the playlist and permanently deleted from app storage.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -469,6 +469,7 @@ export default function HomeScreen() {
                   highlightedItemId === localItem.id ? highlightToken : 0
                 }
                 isDeleteDisabled={isLibraryBusy || playback.isTransitioning}
+                isMetadataDisabled={isLibraryBusy}
                 isReorderDisabled={isLibraryBusy || library.items.length < 2}
                 loadedDurationSeconds={playback.durationSeconds}
                 playbackError={playback.playbackError}
@@ -477,6 +478,7 @@ export default function HomeScreen() {
                 onReorder={(itemId, offset) =>
                   void library.reorderAudio(itemId, offset)
                 }
+                onSaveMetadata={library.updateAudioMetadata}
                 onTogglePlayback={handleToggleLocalPlayback}
               />
             )

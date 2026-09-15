@@ -1,7 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { File } from 'expo-file-system';
 
-import { AUDIO_LIBRARY_STORAGE_KEY, type AudioItem } from '@/models/audio-item';
+import {
+  AUDIO_LIBRARY_STORAGE_KEY,
+  EMPTY_AUDIO_METADATA,
+  type AudioItem,
+  type AudioMetadata,
+} from '@/models/audio-item';
 import {
   consumeAndroidAutoPlaybackUpdates,
   syncAndroidAutoLibrary,
@@ -213,6 +218,7 @@ function toStoredAudioItem(item: AudioItem): AudioItem {
     durationSeconds: item.durationSeconds,
     lastPositionSeconds: item.lastPositionSeconds,
     isPlayed: item.isPlayed ?? false,
+    metadata: toStoredAudioMetadata(item.metadata),
     addedAt: item.addedAt,
     updatedAt: item.updatedAt,
   };
@@ -235,9 +241,43 @@ function isAudioItem(value: unknown): value is AudioItem {
     isNullableNonNegativeNumber(item.durationSeconds) &&
     isNonNegativeNumber(item.lastPositionSeconds) &&
     isOptionalBoolean(item.isPlayed) &&
+    isOptionalAudioMetadata(item.metadata) &&
     isValidTimestamp(item.addedAt) &&
     isValidTimestamp(item.updatedAt)
   );
+}
+
+function toStoredAudioMetadata(metadata: AudioMetadata | undefined): AudioMetadata {
+  return {
+    title: toOptionalText(metadata?.title),
+    artist: toOptionalText(metadata?.artist),
+    album: toOptionalText(metadata?.album),
+    releaseYear: toOptionalText(metadata?.releaseYear),
+    genre: toOptionalText(metadata?.genre),
+    coverArtUrl: toOptionalText(metadata?.coverArtUrl),
+    description: toOptionalText(metadata?.description),
+  };
+}
+
+function isOptionalAudioMetadata(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const metadata = value as Record<keyof AudioMetadata, unknown>;
+
+  return Object.keys(EMPTY_AUDIO_METADATA).every((key) =>
+    isOptionalNullableString(metadata[key as keyof AudioMetadata])
+  );
+}
+
+function toOptionalText(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
 }
 
 function isFileAvailable(localUri: string): boolean {
@@ -262,6 +302,12 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
+}
+
+function isOptionalNullableString(
+  value: unknown
+): value is string | null | undefined {
+  return value === undefined || isNullableString(value);
 }
 
 function isOptionalFingerprint(value: unknown): value is string | null | undefined {

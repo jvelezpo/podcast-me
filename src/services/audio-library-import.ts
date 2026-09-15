@@ -4,6 +4,7 @@ import { getInfoAsync } from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 
 import {
+  EMPTY_AUDIO_METADATA,
   createAudioItemId,
   createAudioLibraryFilename,
   type AudioItem,
@@ -87,6 +88,7 @@ export async function pickAndCopyAudioFiles(
         durationSeconds: null,
         lastPositionSeconds: 0,
         isPlayed: false,
+        metadata: { ...EMPTY_AUDIO_METADATA },
         addedAt: timestamp,
         updatedAt: timestamp,
       });

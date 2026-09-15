@@ -4,6 +4,7 @@ import { AppState } from 'react-native';
 
 import type { AudioItemPlaybackUpdate } from '@/hooks/use-audio-library';
 import type { LoadedAudioItem } from '@/services/audio-library-storage';
+import { getAudioItemTitle } from '@/utils/audio-display';
 import { stopAndroidAutoPlayback } from '../../modules/android-auto';
 
 export type AudioPlaybackError = {
@@ -79,8 +80,8 @@ export function useAudioLibraryPlayer(
       player.setActiveForLockScreen(
         true,
         {
-          title: item.originalName,
-          artist: 'Podcast Me',
+          title: getAudioItemTitle(item),
+          artist: item.metadata.artist ?? 'Podcast Me',
         },
         {
           isLiveStream: false,
@@ -185,7 +186,7 @@ export function useAudioLibraryPlayer(
           isStarting: false,
         };
         pendingLoad.current = pending;
-        player.replace({ uri: item.localUri, name: item.originalName });
+        player.replace({ uri: item.localUri, name: getAudioItemTitle(item) });
         pending.sawUnloadedStatus = !player.isLoaded;
       } catch {
         failPlayback(

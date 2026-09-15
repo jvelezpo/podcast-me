@@ -28,7 +28,7 @@ import type { RemoteAudio } from '@/services/api'
 import {
   formatEpisodeDate,
   formatPlaybackTime,
-  getEpisodeTitle,
+  getAudioItemTitle,
 } from '@/utils/audio-display'
 
 const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const
@@ -238,12 +238,13 @@ export function GlobalPlayer() {
           !playback.isReady ||
           !activeItem.isAvailable
         }
+        imageUrl={activeItem.metadata.coverArtUrl}
         itemId={activeItem.id}
-        name={activeItem.originalName}
+        name={getAudioItemTitle(activeItem)}
         onOpen={() => openPlayer(activeItem)}
         onToggle={() => playback.togglePlayback(activeItem)}
         tintColor={theme.accent}
-        title={getEpisodeTitle(activeItem.originalName)}
+        title={getAudioItemTitle(activeItem)}
       />
     ) : null
   const isViewingPlayingAudio =
@@ -301,6 +302,14 @@ export function GlobalPlayer() {
     ? Math.min(playback.currentPositionSeconds / activeDuration, 1)
     : 0
   const artworkSize = media.short ? 220 : media.compact ? 276 : 340
+  const itemTitle = getAudioItemTitle(item)
+  const itemMetadataSummary = [
+    item.metadata.artist,
+    item.metadata.album,
+    item.metadata.releaseYear,
+  ]
+    .filter(Boolean)
+    .join(' · ')
   const isDisabled =
     playback.isTransitioning || !playback.isReady || !item.isAvailable
   const isDockDisabled =
@@ -397,7 +406,7 @@ export function GlobalPlayer() {
             >
               <AppButton
                 tone="ghost"
-                accessibilityLabel={`Open now playing for ${getEpisodeTitle(activeItem.originalName)}`}
+                accessibilityLabel={`Open now playing for ${getAudioItemTitle(activeItem)}`}
                 onPress={() => openPlayer(activeItem)}
                 minWidth={0}
                 flex={1}
@@ -405,8 +414,9 @@ export function GlobalPlayer() {
                 padding={0}
               >
                 <EpisodeArtwork
+                  imageUrl={activeItem.metadata.coverArtUrl}
                   itemId={activeItem.id}
-                  name={activeItem.originalName}
+                  name={getAudioItemTitle(activeItem)}
                   size={54}
                 />
                 <YStack flex={1} minWidth={0} alignItems="flex-start">
@@ -415,7 +425,7 @@ export function GlobalPlayer() {
                     numberOfLines={1}
                     width="100%"
                   >
-                    {getEpisodeTitle(activeItem.originalName)}
+                    {getAudioItemTitle(activeItem)}
                   </ThemedText>
                   <ThemedText
                     type="metadata"
@@ -522,8 +532,9 @@ export function GlobalPlayer() {
                   boxShadow="0 22px 50px rgba(0,0,0,0.28)"
                 >
                   <EpisodeArtwork
+                    imageUrl={item.metadata.coverArtUrl}
                     itemId={item.id}
-                    name={item.originalName}
+                    name={itemTitle}
                     size={artworkSize}
                   />
                 </ThemedView>
@@ -535,10 +546,11 @@ export function GlobalPlayer() {
                     numberOfLines={3}
                     $compact={{ fontSize: 22, lineHeight: 28 }}
                   >
-                    {getEpisodeTitle(item.originalName)}
+                    {itemTitle}
                   </ThemedText>
                   <ThemedText type="default" themeColor="textSecondary">
-                    Local recording · {formatEpisodeDate(item.addedAt)}
+                    {itemMetadataSummary ||
+                      `Local recording · ${formatEpisodeDate(item.addedAt)}`}
                   </ThemedText>
                   <XStack
                     alignItems="center"
@@ -559,7 +571,7 @@ export function GlobalPlayer() {
 
                 <YStack width="100%" gap={Spacing.two}>
                   <AudioPlaybackSlider
-                    accessibilityLabel={`${getEpisodeTitle(item.originalName)} playback position`}
+                    accessibilityLabel={`${itemTitle} playback position`}
                     bufferedSeconds={item.isAvailable ? duration : null}
                     disabled={
                       isDisabled || duration === null || !isViewingActiveItem
@@ -1102,6 +1114,7 @@ function RemotePlayerSurface({
 
 type CurrentlyPlayingBannerProps = {
   disabled: boolean
+  imageUrl?: string | null
   itemId: string
   name: string
   onOpen: () => void
@@ -1112,6 +1125,7 @@ type CurrentlyPlayingBannerProps = {
 
 function CurrentlyPlayingBanner({
   disabled,
+  imageUrl,
   itemId,
   name,
   onOpen,
@@ -1140,7 +1154,12 @@ function CurrentlyPlayingBanner({
           justifyContent="flex-start"
           padding={0}
         >
-          <EpisodeArtwork itemId={itemId} name={name} size={42} />
+          <EpisodeArtwork
+            imageUrl={imageUrl}
+            itemId={itemId}
+            name={name}
+            size={42}
+          />
           <YStack flex={1} minWidth={0} alignItems="flex-start">
             <ThemedText type="metadata" color="$accentForeground">
               Now playing

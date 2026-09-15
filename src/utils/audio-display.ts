@@ -1,3 +1,5 @@
+import type { AudioItem } from '@/models/audio-item';
+
 export function getEpisodeTitle(filename: string): string {
   return filename
     .replace(/\.[^.]+$/, '')
@@ -5,6 +7,12 @@ export function getEpisodeTitle(filename: string): string {
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+export function getAudioItemTitle(
+  item: Pick<AudioItem, 'metadata' | 'originalName'>
+): string {
+  return item.metadata.title ?? getEpisodeTitle(item.originalName);
 }
 
 export function getEpisodeInitials(filename: string): string {
