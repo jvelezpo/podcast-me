@@ -13,10 +13,11 @@ const entries = new Map<string, CacheEntry>()
 export function getCachedRemoteAudios(
   userId: string,
   load: () => Promise<RemoteAudio[]>,
+  forceRefresh = false,
 ): Promise<RemoteAudio[]> {
   const existing = entries.get(userId)
 
-  if (existing && existing.expiresAt > Date.now()) {
+  if (!forceRefresh && existing && existing.expiresAt > Date.now()) {
     return Promise.resolve(existing.audios)
   }
 

@@ -45,7 +45,7 @@ type AuthContextValue = {
   profileError: string | null
   requestCode: (email: string) => Promise<void>
   verifyCode: (email: string, code: string) => Promise<void>
-  loadRemoteAudios: () => Promise<RemoteAudio[]>
+  loadRemoteAudios: (forceRefresh?: boolean) => Promise<RemoteAudio[]>
   getRemoteAudioStreamSource: (
     audio: RemoteAudio,
   ) => Promise<RemoteAudioStreamSource>
@@ -177,45 +177,48 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
   }, [refreshProfileForSession, session])
 
-  const loadRemoteAudios = useCallback(async (): Promise<RemoteAudio[]> => {
-    if (!session) {
-      return []
-    }
+  const loadRemoteAudios = useCallback(
+    async (forceRefresh = false): Promise<RemoteAudio[]> => {
+      if (!session) {
+        return []
+      }
 
-    return getCachedRemoteAudios(session.user.id, async () => {
-      try {
-        let activeSession = session
-
-        if (hasAccessTokenExpired(activeSession)) {
-          activeSession = await rotateSessionForProvider(activeSession)
-          setSession(activeSession)
-        }
-
+      return getCachedRemoteAudios(session.user.id, async () => {
         try {
-          return await loadAllRemoteAudios(activeSession.accessToken)
-        } catch (error) {
-          if (!(error instanceof ApiError) || error.status !== 401) {
-            throw error
+          let activeSession = session
+
+          if (hasAccessTokenExpired(activeSession)) {
+            activeSession = await rotateSessionForProvider(activeSession)
+            setSession(activeSession)
           }
 
-          activeSession = await rotateSessionForProvider(activeSession)
-          setSession(activeSession)
-          return await loadAllRemoteAudios(activeSession.accessToken)
-        }
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 401) {
-          clearRemoteAudioCache(session.user.id)
-          await clearRemoteAudioFileCache(session.user.id)
-          setSession(null)
-          setLibraryTotal(null)
-          setProfileError(null)
-          await clearSession()
-        }
+          try {
+            return await loadAllRemoteAudios(activeSession.accessToken)
+          } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 401) {
+              throw error
+            }
 
-        throw error
-      }
-    })
-  }, [rotateSessionForProvider, session])
+            activeSession = await rotateSessionForProvider(activeSession)
+            setSession(activeSession)
+            return await loadAllRemoteAudios(activeSession.accessToken)
+          }
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 401) {
+            clearRemoteAudioCache(session.user.id)
+            await clearRemoteAudioFileCache(session.user.id)
+            setSession(null)
+            setLibraryTotal(null)
+            setProfileError(null)
+            await clearSession()
+          }
+
+          throw error
+        }
+      }, forceRefresh)
+    },
+    [rotateSessionForProvider, session],
+  )
 
   const getRemoteAudioStreamSource = useCallback(
     async (audio: RemoteAudio): Promise<RemoteAudioStreamSource> => {

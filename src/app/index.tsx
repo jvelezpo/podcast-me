@@ -1,7 +1,7 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
 import { useNetworkState } from 'expo-network'
-import { useEffect, useRef, useState } from 'react'
-import { Alert, FlatList, Platform, StyleSheet } from 'react-native'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Alert, FlatList, Platform, RefreshControl, StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
@@ -55,6 +55,7 @@ export default function HomeScreen() {
     null,
   )
   const [highlightToken, setHighlightToken] = useState(0)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [remoteCollection, setRemoteCollection] = useState<RemoteCollection>({
     userId: null,
     audios: [],
@@ -152,6 +153,31 @@ export default function HomeScreen() {
       unsubscribe()
     }
   }, [isOnline, loadRemoteAudios, remotePlayback.stop, user])
+
+  const handleRefresh = useCallback(async () => {
+    if (!user || !isOnline || isRefreshing) {
+      return
+    }
+
+    setIsRefreshing(true)
+
+    try {
+      const [onlineAudios, cachedAudios] = await Promise.all([
+        loadRemoteAudios(true),
+        loadCachedRemoteAudios(user.id),
+      ])
+
+      setRemoteCollection({
+        userId: user.id,
+        audios: mergeRemoteAudios(onlineAudios, cachedAudios),
+        cachedAudioIds: new Set(cachedAudios.map((audio) => audio.id)),
+      })
+    } catch {
+      // Keep the current collection when the refresh request fails.
+    } finally {
+      setIsRefreshing(false)
+    }
+  }, [isOnline, isRefreshing, loadRemoteAudios, user])
 
   const showToast = (message: string) => {
     if (toastTimerRef.current) {
@@ -288,6 +314,14 @@ export default function HomeScreen() {
           }
           style={styles.list}
           contentContainerStyle={contentContainerStyle}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={() => void handleRefresh()}
+              tintColor={theme.accent}
+              colors={[theme.accent]}
+            />
+          }
           ItemSeparatorComponent={() => <View height={Spacing.three} />}
           ListHeaderComponent={
             <YStack gap={Spacing.four} marginBottom={Spacing.four}>
