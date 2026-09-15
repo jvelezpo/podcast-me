@@ -62,6 +62,16 @@ class AndroidAutoStoreTest {
   }
 
   @Test
+  fun syncLibraryFallsBackToFilenameWhenMetadataTitleIsNull() {
+    val item = catalogItem("available", audioFile.toURI().toString()).apply {
+      put("metadata", JSONObject().put("title", JSONObject.NULL))
+    }
+    AndroidAutoStore.syncLibrary(context, JSONArray().put(item).toString())
+
+    assertEquals("available", AndroidAutoStore.catalog(context).single().title)
+  }
+
+  @Test
   fun invalidSyncDoesNotReplaceExistingCatalog() {
     val validCatalog = JSONArray()
       .put(catalogItem("available", audioFile.toURI().toString()))

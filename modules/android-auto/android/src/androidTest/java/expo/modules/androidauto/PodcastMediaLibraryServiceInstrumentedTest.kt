@@ -255,6 +255,7 @@ class PodcastMediaLibraryServiceInstrumentedTest {
         put("durationSeconds", 60.0)
         put("lastPositionSeconds", 0.0)
         put("isPlayed", false)
+        put("metadata", JSONObject().put("title", JSONObject.NULL))
         put("updatedAt", "2026-09-09T12:00:00.000Z")
       }).toString(),
     )

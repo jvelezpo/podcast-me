@@ -1,7 +1,7 @@
 {
   "name": "podcast-me",
   "main": "expo-router/entry",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "expo": {
     "autolinking": {
       "android": {
@@ -55,7 +55,7 @@
     "prepare": "node ./scripts/install-git-hooks.js",
     "test:version": "node --test tests/version-hook.test.js",
     "postinstall": "patch-package --error-on-fail",
-    "start": "expo start",
+    "start": "expo start --tunnel",
     "start:dev": "APP_VARIANT=development expo start --dev-client",
     "reset-project": "node ./scripts/reset-project.js",
     "prebuild:dev:android": "APP_VARIANT=development expo prebuild --clean --platform android",
