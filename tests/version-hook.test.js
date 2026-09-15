@@ -60,9 +60,11 @@ test('bumps a patch, synchronizes the lockfile, and does not bump again on retry
   const expected = `${major}.${minor}.${patch + 1}`;
   const first = f.run();
   assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, new RegExp(`Version hook: cut new version ${expected}`));
   f.assertVersion(expected);
   const retry = f.run();
   assert.equal(retry.status, 0, retry.stderr);
+  assert.match(retry.stdout, new RegExp(`Version hook: no new version cut \\(using staged version ${expected}\\)`));
   f.assertVersion(expected);
 });
 
@@ -76,6 +78,7 @@ for (const release of ['minor', 'major']) {
     f.git('add', 'package.json');
     const result = f.run();
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`Version hook: no new version cut \\(using staged version ${pkg.version}\\)`));
     f.assertVersion(pkg.version);
   });
 }
@@ -98,7 +101,9 @@ for (const file of ['package.json', 'package-lock.json']) {
 
 test('does not create a version bump for an empty index', (t) => {
   const f = fixture(t);
-  assert.equal(f.run().status, 0);
+  const result = f.run();
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /Version hook: no new version cut \(nothing staged\)/);
   f.assertVersion(f.original);
   assert.equal(f.git('diff', '--cached'), '');
 });
