@@ -230,6 +230,9 @@ export function GlobalPlayer() {
   const remotePlayingAudio = remotePlayback.isPlaying
     ? remotePlayback.activeAudio
     : null
+  const remotePlayingImageUrl = remotePlayingAudio
+    ? getRemoteAudioCoverArtUrl(remotePlayingAudio.metadata)
+    : null
   const localPlayingBanner =
     activeItem && playback.isPlaying ? (
       <CurrentlyPlayingBanner
@@ -261,6 +264,7 @@ export function GlobalPlayer() {
       ? (
           <CurrentlyPlayingBanner
             disabled={remotePlayback.isTransitioning}
+            imageUrl={remotePlayingImageUrl}
             itemId={`remote-${remotePlayingAudio.id}`}
             name={remotePlayingAudio.title}
             onOpen={() => openRemotePlayer(remotePlayingAudio)}
@@ -834,6 +838,7 @@ function RemotePlayerSurface({
   const progress = duration ? Math.min(positionSeconds / duration, 1) : 0
   const isDisabled = remotePlayback.isTransitioning || !isActive
   const artworkSize = media.short ? 220 : media.compact ? 276 : 340
+  const imageUrl = getRemoteAudioCoverArtUrl(audio.metadata)
   const error =
     remotePlayback.playbackError?.audioId === audio.id
       ? remotePlayback.playbackError.message
@@ -889,6 +894,7 @@ function RemotePlayerSurface({
               padding={0}
             >
               <EpisodeArtwork
+                imageUrl={imageUrl}
                 itemId={`remote-${audio.id}`}
                 name={audio.title}
                 size={54}
@@ -1000,6 +1006,7 @@ function RemotePlayerSurface({
                   boxShadow="0 22px 50px rgba(0,0,0,0.28)"
                 >
                   <EpisodeArtwork
+                    imageUrl={imageUrl}
                     itemId={`remote-${audio.id}`}
                     name={audio.title}
                     size={artworkSize}
@@ -1265,6 +1272,18 @@ function formatSleepTimerRemaining(remainingMs: number): string {
   }
 
   return `${Math.max(1, Math.ceil(remainingMs / ONE_MINUTE_MS))}m left`
+}
+
+function getRemoteAudioCoverArtUrl(metadata: unknown): string | null {
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+    return null
+  }
+
+  const coverArtUrl = (metadata as Record<string, unknown>).coverArtUrl
+
+  return typeof coverArtUrl === 'string' && /^https:\/\//i.test(coverArtUrl.trim())
+    ? coverArtUrl.trim()
+    : null
 }
 
 const PLAY_ICON: SymbolViewProps['name'] = {
