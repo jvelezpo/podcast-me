@@ -3,13 +3,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppState } from 'react-native'
 
 import type { RemoteAudio, RemoteAudioStreamSource } from '@/services/api'
+import { shouldTrackRemoteAudioPosition } from '@/services/remote-audio-playback-policy'
 import {
+  clearRemoteAudioPosition,
   loadRemoteAudioPosition,
   saveRemoteAudioPosition,
 } from '@/services/remote-audio-progress'
 
 type PendingLoad = {
   audio: RemoteAudio
+  source: RemoteAudioStreamSource
   requestId: number
   sawUnloadedStatus: boolean
   isStarting: boolean
@@ -20,12 +23,21 @@ type GetStreamSource = (
   audio: RemoteAudio,
 ) => Promise<RemoteAudioStreamSource>
 
-export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
+type RecordPlayback = (
+  audio: RemoteAudio,
+  source?: RemoteAudioStreamSource,
+) => void
+
+export function useRemoteAudioPlayer(
+  getStreamSource: GetStreamSource,
+  recordPlayback: RecordPlayback,
+) {
   const player = useAudioPlayer(null, { updateInterval: 500 })
   const status = useAudioPlayerStatus(player)
   const [activeAudioId, setActiveAudioId] = useState<string | null>(null)
   const [activeAudio, setActiveAudio] = useState<RemoteAudio | null>(null)
   const [isTransitioning, setIsTransitioning] = useState(false)
+  const [isUsingCachedSource, setIsUsingCachedSource] = useState(false)
   const [playbackRate, setPlaybackRateState] = useState(1)
   const [playbackError, setPlaybackError] = useState<{
     audioId: string
@@ -54,7 +66,11 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
     const activeAudio = activeAudioRef.current
     const currentStatus = statusRef.current
 
-    if (!activeAudio || !currentStatus.isLoaded) {
+    if (
+      !activeAudio ||
+      !shouldTrackRemoteAudioPosition(activeAudio.metadata) ||
+      !currentStatus.isLoaded
+    ) {
       return
     }
 
@@ -80,6 +96,7 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
     setActiveAudioId(null)
     setActiveAudio(null)
     setIsTransitioning(false)
+    setIsUsingCachedSource(false)
     setPlaybackError(null)
     lastCheckpointRef.current = null
   }, [persistCurrentPosition, player])
@@ -114,6 +131,12 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
       setPlaybackError(null)
 
       try {
+        const shouldResume = shouldTrackRemoteAudioPosition(audio.metadata)
+
+        if (!shouldResume) {
+          void clearRemoteAudioPosition(audio.id).catch(() => undefined)
+        }
+
         await setAudioModeAsync({
           allowsRecording: false,
           interruptionMode: 'doNotMix',
@@ -123,7 +146,9 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
         })
         const [source, resumePositionSeconds] = await Promise.all([
           getStreamSource(audio),
-          loadRemoteAudioPosition(audio.id),
+          shouldResume
+            ? loadRemoteAudioPosition(audio.id)
+            : Promise.resolve(0),
         ])
 
         if (requestId !== transitionSequenceRef.current) {
@@ -135,9 +160,11 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
         activeAudioRef.current = audio
         setActiveAudioId(audio.id)
         setActiveAudio(audio)
+        setIsUsingCachedSource(source.uri.startsWith('file:'))
 
         const pendingLoad: PendingLoad = {
           audio,
+          source,
           requestId,
           sawUnloadedStatus: false,
           isStarting: false,
@@ -178,12 +205,13 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
           persistCurrentPosition()
         } else {
           player.play()
+          recordPlayback(audio)
         }
       } catch {
         failPlayback(audio.id, 'This remote audio could not be played.')
       }
     },
-    [failPlayback, isTransitioning, loadAndPlay, persistCurrentPosition, playbackError?.audioId, player, status.isLoaded, status.playing],
+    [failPlayback, isTransitioning, loadAndPlay, persistCurrentPosition, playbackError?.audioId, player, recordPlayback, status.isLoaded, status.playing],
   )
 
   const pausePlayback = useCallback(
@@ -200,9 +228,10 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
     (audio: RemoteAudio): void => {
       if (activeAudioRef.current?.id === audio.id && status.isLoaded) {
         player.play()
+        recordPlayback(audio)
       }
     },
-    [player, status.isLoaded],
+    [player, recordPlayback, status.isLoaded],
   )
 
   useEffect(() => {
@@ -250,6 +279,7 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
         }
 
         player.play()
+        recordPlayback(pendingLoad.audio, pendingLoad.source)
         activateLockScreenControls(pendingLoad.audio)
         pendingLoadRef.current = null
         lastCheckpointRef.current = {
@@ -265,14 +295,19 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
         )
       }
     })()
-  }, [activateLockScreenControls, failPlayback, player, status.duration, status.error, status.isLoaded])
+  }, [activateLockScreenControls, failPlayback, player, recordPlayback, status.duration, status.error, status.isLoaded])
 
   useEffect(() => {
     statusRef.current = status
 
     const activeAudio = activeAudioRef.current
 
-    if (!activeAudio || !status.isLoaded || !status.playing) {
+    if (
+      !activeAudio ||
+      !shouldTrackRemoteAudioPosition(activeAudio.metadata) ||
+      !status.isLoaded ||
+      !status.playing
+    ) {
       return
     }
 
@@ -336,7 +371,10 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
     const finishedAudio = activeAudioRef.current
     stop()
 
-    if (finishedAudio) {
+    if (
+      finishedAudio &&
+      shouldTrackRemoteAudioPosition(finishedAudio.metadata)
+    ) {
       void saveRemoteAudioPosition(finishedAudio.id, 0)
     }
   }, [status.didJustFinish, stop])
@@ -352,8 +390,14 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
       await player.seekTo(Math.max(0, positionSeconds))
       const activeAudio = activeAudioRef.current
 
-      if (activeAudio) {
-        await saveRemoteAudioPosition(activeAudio.id, Math.max(0, positionSeconds))
+      if (
+        activeAudio &&
+        shouldTrackRemoteAudioPosition(activeAudio.metadata)
+      ) {
+        await saveRemoteAudioPosition(
+          activeAudio.id,
+          Math.max(0, positionSeconds),
+        )
       }
     },
     [player, status.isLoaded],
@@ -390,6 +434,7 @@ export function useRemoteAudioPlayer(getStreamSource: GetStreamSource) {
     durationSeconds: status.isLoaded ? finitePositive(status.duration) : null,
     isPlaying: status.playing && playbackError === null,
     isTransitioning,
+    isUsingCachedSource,
     playbackRate,
     playbackError,
     pausePlayback,

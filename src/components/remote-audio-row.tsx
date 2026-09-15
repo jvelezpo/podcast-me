@@ -13,6 +13,7 @@ import { formatPlaybackTime } from '@/utils/audio-display'
 
 type RemoteAudioRowProps = {
   audio: RemoteAudio
+  isCached: boolean
   isActive: boolean
   isPlaying: boolean
   isTransitioning: boolean
@@ -23,6 +24,7 @@ type RemoteAudioRowProps = {
 
 export function RemoteAudioRow({
   audio,
+  isCached,
   isActive,
   isPlaying,
   isTransitioning,
@@ -54,7 +56,9 @@ export function RemoteAudioRow({
       <XStack alignItems="center" gap={Spacing.three} padding={Spacing.three}>
         <AppButton
           tone="ghost"
-          accessibilityLabel={`Open now playing for ${audio.title}`}
+          accessibilityLabel={`Open now playing for ${audio.title}${
+            isCached ? ', cached for offline playback' : ''
+          }`}
           onPress={() => onOpenPlayer(audio)}
           minWidth={0}
           flex={1}
@@ -105,14 +109,24 @@ export function RemoteAudioRow({
               </ThemedText>
             ) : null}
             <XStack alignItems="center" gap={Spacing.one} marginTop={Spacing.half}>
-              <View
-                width={7}
-                height={7}
-                borderRadius={7}
-                backgroundColor="$accent"
-              />
+              {isCached ? (
+                <SymbolView
+                  name={CACHED_ICON}
+                  size={16}
+                  tintColor={theme.accent}
+                />
+              ) : (
+                <View
+                  width={7}
+                  height={7}
+                  borderRadius={7}
+                  backgroundColor="$accent"
+                />
+              )}
               <ThemedText type="metadata" color="$accent">
-                Remote · {sourceType}
+                {isCached
+                  ? 'Cached · Available offline'
+                  : `Remote · ${sourceType}`}
               </ThemedText>
               {metadata.durationMs !== null ? (
                 <ThemedText type="metadata" themeColor="textSecondary">
@@ -151,6 +165,11 @@ const REMOTE_ICON: SymbolViewProps['name'] = {
   ios: 'cloud.fill',
   android: 'cloud',
   web: 'cloud',
+}
+const CACHED_ICON: SymbolViewProps['name'] = {
+  ios: 'icloud.and.arrow.down.fill',
+  android: 'cloud_done',
+  web: 'cloud_done',
 }
 const PLAY_ICON: SymbolViewProps['name'] = {
   ios: 'play.fill',

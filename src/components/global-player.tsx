@@ -810,6 +810,7 @@ type RemotePlayerSurfaceProps = {
     durationSeconds: number | null
     isPlaying: boolean
     isTransitioning: boolean
+    isUsingCachedSource: boolean
     playbackError: { audioId: string; message: string } | null
     playbackRate: number
     pausePlayback: (audio: RemoteAudio) => void
@@ -1023,7 +1024,9 @@ function RemotePlayerSurface({
                     {audio.title}
                   </ThemedText>
                   <ThemedText type="default" themeColor="textSecondary">
-                    Remote stream · Available while connected
+                    {remotePlayback.isUsingCachedSource
+                      ? 'Cached audio · Available offline'
+                      : 'Remote stream · Caching for offline playback'}
                   </ThemedText>
                   <XStack
                     alignItems="center"

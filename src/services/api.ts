@@ -31,7 +31,7 @@ export type RemoteAudio = {
 
 export type RemoteAudioStreamSource = {
   uri: string
-  headers: { Authorization: string }
+  headers: Record<string, string>
 }
 
 type AudioPage = {

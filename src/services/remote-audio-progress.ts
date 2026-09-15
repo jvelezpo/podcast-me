@@ -31,6 +31,12 @@ export function saveRemoteAudioPosition(
   return write
 }
 
+export function clearRemoteAudioPosition(audioId: string): Promise<void> {
+  const write = writeTail.then(() => AsyncStorage.removeItem(getKey(audioId)))
+  writeTail = write.catch(() => undefined)
+  return write
+}
+
 function getKey(audioId: string): string {
   return `${KEY_PREFIX}${encodeURIComponent(audioId)}`
 }

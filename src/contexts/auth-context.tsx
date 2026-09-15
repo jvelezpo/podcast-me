@@ -32,6 +32,11 @@ import {
   clearRemoteAudioCache,
   getCachedRemoteAudios,
 } from '@/services/remote-audio-cache'
+import {
+  clearRemoteAudioFileCache,
+  getCachedRemoteAudioSource,
+  recordRemoteAudioPlayback,
+} from '@/services/remote-audio-file-cache'
 
 type AuthContextValue = {
   isRestoring: boolean
@@ -44,6 +49,10 @@ type AuthContextValue = {
   getRemoteAudioStreamSource: (
     audio: RemoteAudio,
   ) => Promise<RemoteAudioStreamSource>
+  recordRemoteAudioPlayback: (
+    audio: RemoteAudio,
+    source?: RemoteAudioStreamSource,
+  ) => void
   refreshProfile: () => Promise<void>
   signOut: () => Promise<void>
 }
@@ -114,6 +123,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           clearRemoteAudioCache(currentSession.user.id)
+          await clearRemoteAudioFileCache(currentSession.user.id)
           setSession(null)
           setLibraryTotal(null)
           setProfileError(null)
@@ -195,6 +205,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           clearRemoteAudioCache(session.user.id)
+          await clearRemoteAudioFileCache(session.user.id)
           setSession(null)
           setLibraryTotal(null)
           setProfileError(null)
@@ -208,6 +219,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const getRemoteAudioStreamSource = useCallback(
     async (audio: RemoteAudio): Promise<RemoteAudioStreamSource> => {
+      if (session) {
+        const cachedSource = await getCachedRemoteAudioSource(
+          session.user.id,
+          audio.id,
+        )
+
+        if (cachedSource) {
+          return cachedSource
+        }
+      }
+
       if (!session) {
         throw new ApiError('Sign in to play audio from your remote library.', 401)
       }
@@ -227,6 +249,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           clearRemoteAudioCache(session.user.id)
+          await clearRemoteAudioFileCache(session.user.id)
           setSession(null)
           setLibraryTotal(null)
           setProfileError(null)
@@ -237,6 +260,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
       }
     },
     [rotateSessionForProvider, session],
+  )
+
+  const recordRemotePlayback = useCallback(
+    (audio: RemoteAudio, source?: RemoteAudioStreamSource) => {
+      if (session) {
+        recordRemoteAudioPlayback(session.user.id, audio, source)
+      }
+    },
+    [session],
   )
 
   const signOut = useCallback(async () => {
@@ -259,6 +291,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     } finally {
       if (session) {
         clearRemoteAudioCache(session.user.id)
+        await clearRemoteAudioFileCache(session.user.id)
       }
       setSession(null)
       setLibraryTotal(null)
@@ -278,6 +311,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         verifyCode,
         loadRemoteAudios,
         getRemoteAudioStreamSource,
+        recordRemoteAudioPlayback: recordRemotePlayback,
         refreshProfile,
         signOut,
       }}

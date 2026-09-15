@@ -22,11 +22,21 @@ import { useAuth } from '@/contexts/auth-context'
 import { useTheme } from '@/hooks/use-theme'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
 import type { RemoteAudio } from '@/services/api'
+import {
+  loadCachedRemoteAudios,
+  subscribeToRemoteAudioFileCache,
+} from '@/services/remote-audio-file-cache'
 import { formatPlaybackTime, getAudioItemTitle } from '@/utils/audio-display'
 
 type CollectionItem =
   | { kind: 'local'; item: LoadedAudioItem }
-  | { kind: 'remote'; audio: RemoteAudio }
+  | { kind: 'remote'; audio: RemoteAudio; isCached: boolean }
+
+type RemoteCollection = {
+  userId: string | null
+  audios: RemoteAudio[]
+  cachedAudioIds: Set<string>
+}
 
 export default function HomeScreen() {
   const { library, playback, openPlayer, openRemotePlayer, remotePlayback } =
@@ -45,7 +55,11 @@ export default function HomeScreen() {
     null,
   )
   const [highlightToken, setHighlightToken] = useState(0)
-  const [remoteAudios, setRemoteAudios] = useState<RemoteAudio[]>([])
+  const [remoteCollection, setRemoteCollection] = useState<RemoteCollection>({
+    userId: null,
+    audios: [],
+    cachedAudioIds: new Set(),
+  })
   const isLibraryBusy = library.importPhase !== 'idle' || library.isMutating
   const isOffline =
     networkState.isConnected === false ||
@@ -56,9 +70,15 @@ export default function HomeScreen() {
     (total, item) => total + (item.durationSeconds ?? 0),
     0,
   )
+  const visibleRemoteCollection =
+    user && remoteCollection.userId === user.id ? remoteCollection : null
   const collectionItems: CollectionItem[] = [
     ...library.items.map((item) => ({ kind: 'local' as const, item })),
-    ...remoteAudios.map((audio) => ({ kind: 'remote' as const, audio })),
+    ...(visibleRemoteCollection?.audios ?? []).map((audio) => ({
+      kind: 'remote' as const,
+      audio,
+      isCached: visibleRemoteCollection?.cachedAudioIds.has(audio.id) ?? false,
+    })),
   ]
   const contentContainerStyle = {
     flexGrow: 1,
@@ -82,28 +102,54 @@ export default function HomeScreen() {
   useEffect(() => {
     let isMounted = true
 
-    if (!isOnline || !user) {
+    if (!user) {
       remotePlayback.stop()
-      setRemoteAudios([])
       return () => {
         isMounted = false
       }
     }
 
-    void loadRemoteAudios()
-      .then((audios) => {
+    const refreshRemoteAudios = async () => {
+      const cachedAudios = await loadCachedRemoteAudios(user.id)
+      const cachedAudioIds = new Set(cachedAudios.map((audio) => audio.id))
+
+      if (isMounted) {
+        setRemoteCollection({
+          userId: user.id,
+          audios: cachedAudios,
+          cachedAudioIds,
+        })
+      }
+
+      if (!isOnline) {
+        return
+      }
+
+      try {
+        const onlineAudios = await loadRemoteAudios()
+
         if (isMounted) {
-          setRemoteAudios(audios)
+          setRemoteCollection({
+            userId: user.id,
+            audios: mergeRemoteAudios(onlineAudios, cachedAudios),
+            cachedAudioIds,
+          })
         }
-      })
-      .catch(() => {
-        if (isMounted) {
-          setRemoteAudios([])
-        }
-      })
+      } catch {
+        // Keep downloaded audio visible when refreshing the remote library fails.
+      }
+    }
+
+    void refreshRemoteAudios()
+    const unsubscribe = subscribeToRemoteAudioFileCache((changedUserId) => {
+      if (changedUserId === user.id) {
+        void refreshRemoteAudios()
+      }
+    })
 
     return () => {
       isMounted = false
+      unsubscribe()
     }
   }, [isOnline, loadRemoteAudios, remotePlayback.stop, user])
 
@@ -438,6 +484,7 @@ export default function HomeScreen() {
               return (
                 <RemoteAudioRow
                   audio={item.audio}
+                  isCached={item.isCached}
                   isActive={remotePlayback.activeAudioId === item.audio.id}
                   isPlaying={remotePlayback.isPlaying}
                   isTransitioning={remotePlayback.isTransitioning}
@@ -490,6 +537,18 @@ export default function HomeScreen() {
       </SafeAreaView>
     </ThemedView>
   )
+}
+
+function mergeRemoteAudios(
+  onlineAudios: RemoteAudio[],
+  cachedAudios: RemoteAudio[],
+): RemoteAudio[] {
+  const onlineIds = new Set(onlineAudios.map((audio) => audio.id))
+
+  return [
+    ...onlineAudios,
+    ...cachedAudios.filter((audio) => !onlineIds.has(audio.id)),
+  ]
 }
 
 function findNextPlayableItem(

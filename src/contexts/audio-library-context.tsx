@@ -31,13 +31,16 @@ type AudioLibraryContextValue = {
 const AudioLibraryContext = createContext<AudioLibraryContextValue | null>(null)
 
 export function AudioLibraryProvider({ children }: PropsWithChildren) {
-  const { getRemoteAudioStreamSource } = useAuth()
+  const { getRemoteAudioStreamSource, recordRemoteAudioPlayback } = useAuth()
   const library = useAudioLibrary()
   const playback = useAudioLibraryPlayer(
     library.updateAudioItem,
     !library.isLoading,
   )
-  const remotePlayback = useRemoteAudioPlayer(getRemoteAudioStreamSource)
+  const remotePlayback = useRemoteAudioPlayer(
+    getRemoteAudioStreamSource,
+    recordRemoteAudioPlayback,
+  )
   const [isPlayerOpen, setIsPlayerOpen] = useState(false)
   const [playerItem, setPlayerItem] = useState<PlayerItem | null>(null)
   const openPlayer = useCallback((item: LoadedAudioItem) => {
