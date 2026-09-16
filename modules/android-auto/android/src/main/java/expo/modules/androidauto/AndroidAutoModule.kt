@@ -37,6 +37,12 @@ class AndroidAutoModule : Module() {
       PodcastMediaLibraryService.catalogChanged()
     }
 
+    AsyncFunction("syncRemoteLibrary") { serializedLibrary: String ->
+      val context = requireNotNull(appContext.reactContext)
+      AndroidAutoStore.syncRemoteLibrary(context, serializedLibrary)
+      PodcastMediaLibraryService.catalogChanged()
+    }
+
     AsyncFunction("consumePlaybackUpdates") {
       val context = requireNotNull(appContext.reactContext)
       AndroidAutoStore.consumePlaybackUpdates(context)

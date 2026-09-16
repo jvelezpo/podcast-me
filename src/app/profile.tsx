@@ -1,6 +1,12 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
 import { useState } from 'react'
-import { ActivityIndicator, StyleSheet, TextInput } from 'react-native'
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
+  TextInput,
+} from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { ScrollView, View, XStack, YStack, useMedia } from 'tamagui'
 
@@ -38,10 +44,16 @@ export default function ProfileScreen() {
   return (
     <ThemedView flex={1}>
       <SafeAreaView style={styles.safeArea}>
-        <ScrollView
-          flex={1}
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.safeArea}
+        >
+          <ScrollView
+            flex={1}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{
             width: '100%',
             maxWidth: MaxContentWidth,
             alignSelf: 'center',
@@ -50,8 +62,8 @@ export default function ProfileScreen() {
             paddingTop: media.short ? Spacing.three : Spacing.four,
             paddingBottom:
               (hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four,
-          }}
-        >
+            }}
+          >
           <YStack gap={Spacing.one}>
             <ThemedText type="eyebrow" themeColor="accent">
               Your listening
@@ -165,7 +177,8 @@ export default function ProfileScreen() {
           >
             Podcast Me · Version {version}
           </ThemedText>
-        </ScrollView>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </ThemedView>
   )

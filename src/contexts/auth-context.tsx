@@ -7,13 +7,18 @@ import {
   useRef,
   useState,
 } from 'react'
+import { Platform } from 'react-native'
 
 import {
   ApiError,
   type AuthUser,
   getProfile,
+  getPlaybackProgress,
   getRemoteAudioStreamUrl,
   listRemoteAudios,
+  type PlaybackEvent,
+  type PlaybackProgress,
+  recordPlaybackEvent,
   refreshSession,
   requestSignInCode,
   type RemoteAudio,
@@ -28,6 +33,7 @@ import {
   loadSession,
   saveSession,
 } from '@/services/auth-session-storage'
+import { syncAndroidAutoRemoteLibrary } from '../../modules/android-auto'
 import {
   clearRemoteAudioCache,
   getCachedRemoteAudios,
@@ -53,6 +59,13 @@ type AuthContextValue = {
     audio: RemoteAudio,
     source?: RemoteAudioStreamSource,
   ) => void
+  getRemotePlaybackProgress: (
+    audioId: string,
+  ) => Promise<PlaybackProgress | null>
+  sendRemotePlaybackEvent: (
+    audioId: string,
+    event: PlaybackEvent,
+  ) => Promise<void>
   refreshProfile: () => Promise<void>
   signOut: () => Promise<void>
 }
@@ -183,14 +196,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
         return []
       }
 
-      return getCachedRemoteAudios(session.user.id, async () => {
-        try {
-          let activeSession = session
+      let catalogSession = session
 
-          if (hasAccessTokenExpired(activeSession)) {
-            activeSession = await rotateSessionForProvider(activeSession)
-            setSession(activeSession)
-          }
+      if (hasAccessTokenExpired(catalogSession)) {
+        catalogSession = await rotateSessionForProvider(catalogSession)
+        setSession(catalogSession)
+      }
+
+      const audios = await getCachedRemoteAudios(catalogSession.user.id, async () => {
+        try {
+          let activeSession = catalogSession
 
           try {
             return await loadAllRemoteAudios(activeSession.accessToken)
@@ -216,6 +231,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
           throw error
         }
       }, forceRefresh)
+
+      void syncRemoteLibraryForAndroidAuto(
+        audios,
+        catalogSession.user.id,
+        catalogSession.accessToken,
+      )
+      return audios
     },
     [rotateSessionForProvider, session],
   )
@@ -274,6 +296,65 @@ export function AuthProvider({ children }: PropsWithChildren) {
     [session],
   )
 
+  const requestWithCurrentSession = useCallback(
+    async <T,>(operation: (accessToken: string) => Promise<T>) => {
+      if (!session) {
+        return null
+      }
+
+      try {
+        let activeSession = session
+
+        if (hasAccessTokenExpired(activeSession)) {
+          activeSession = await rotateSessionForProvider(activeSession)
+          setSession(activeSession)
+        }
+
+        try {
+          return await operation(activeSession.accessToken)
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.status !== 401) {
+            throw error
+          }
+
+          activeSession = await rotateSessionForProvider(activeSession)
+          setSession(activeSession)
+          return await operation(activeSession.accessToken)
+        }
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          clearRemoteAudioCache(session.user.id)
+          await clearRemoteAudioFileCache(session.user.id)
+          setSession(null)
+          setLibraryTotal(null)
+          setProfileError(null)
+          await clearSession()
+        }
+
+        throw error
+      }
+    },
+    [rotateSessionForProvider, session],
+  )
+
+  const getRemotePlaybackProgress = useCallback(
+    async (audioId: string): Promise<PlaybackProgress | null> => {
+      return await requestWithCurrentSession((accessToken) =>
+        getPlaybackProgress(accessToken, audioId),
+      )
+    },
+    [requestWithCurrentSession],
+  )
+
+  const sendRemotePlaybackEvent = useCallback(
+    async (audioId: string, event: PlaybackEvent): Promise<void> => {
+      await requestWithCurrentSession((accessToken) =>
+        recordPlaybackEvent(accessToken, audioId, event),
+      )
+    },
+    [requestWithCurrentSession],
+  )
+
   const signOut = useCallback(async () => {
     try {
       if (session) {
@@ -292,6 +373,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         }
       }
     } finally {
+      await syncAndroidAutoRemoteLibrary('[]').catch(() => undefined)
       if (session) {
         clearRemoteAudioCache(session.user.id)
         await clearRemoteAudioFileCache(session.user.id)
@@ -315,6 +397,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
         loadRemoteAudios,
         getRemoteAudioStreamSource,
         recordRemoteAudioPlayback: recordRemotePlayback,
+        getRemotePlaybackProgress,
+        sendRemotePlaybackEvent,
         refreshProfile,
         signOut,
       }}
@@ -322,6 +406,60 @@ export function AuthProvider({ children }: PropsWithChildren) {
       {children}
     </AuthContext.Provider>
   )
+}
+
+function syncRemoteLibraryForAndroidAuto(
+  audios: readonly RemoteAudio[],
+  userId: string,
+  accessToken: string,
+): Promise<void> {
+  if (Platform.OS !== 'android') {
+    return Promise.resolve()
+  }
+
+  return Promise.all(
+    audios.map(async (audio) => {
+      const source = await getCachedRemoteAudioSource(userId, audio.id)
+
+      return {
+        id: `remote:${audio.id}`,
+        originalName: audio.title,
+        localUri: source?.uri ?? getRemoteAudioStreamUrl(audio.streamUrl),
+        mimeType: null,
+        durationSeconds: getRemoteDurationSeconds(audio.metadata),
+        lastPositionSeconds: 0,
+        isPlayed: false,
+        metadata: { coverArtUrl: getRemoteCoverArtUrl(audio.metadata) },
+        updatedAt: audio.createdAt,
+        requestHeaders:
+          source?.headers ?? { Authorization: `Bearer ${accessToken}` },
+      }
+    }),
+  )
+    .then((catalog) => syncAndroidAutoRemoteLibrary(JSON.stringify(catalog)))
+    .catch(() => undefined)
+}
+
+function getRemoteCoverArtUrl(metadata: unknown): string | null {
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+    return null
+  }
+
+  const coverArtUrl = (metadata as Record<string, unknown>).coverArtUrl
+  return typeof coverArtUrl === 'string' && /^https?:\/\//i.test(coverArtUrl.trim())
+    ? coverArtUrl.trim()
+    : null
+}
+
+function getRemoteDurationSeconds(metadata: unknown): number | null {
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+    return null
+  }
+
+  const durationMs = (metadata as Record<string, unknown>).durationMs
+  return typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0
+    ? durationMs / 1_000
+    : null
 }
 
 export function useAuth(): AuthContextValue {

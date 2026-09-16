@@ -7,6 +7,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
@@ -59,6 +60,32 @@ class AndroidAutoStoreTest {
     )
 
     assertEquals(listOf("available"), AndroidAutoStore.catalog(context).map { it.id })
+  }
+
+  @Test
+  fun syncRemoteLibraryPublishesAuthenticatedHttpAudioWithArtwork() {
+    AndroidAutoStore.syncRemoteLibrary(
+      context,
+      JSONArray().put(JSONObject().apply {
+        put("id", "remote:episode-1")
+        put("originalName", "Remote episode")
+        put("localUri", "https://api.example.com/api/v1/audios/episode-1/stream")
+        put("mimeType", JSONObject.NULL)
+        put("metadata", JSONObject().put("coverArtUrl", "https://cdn.example.com/episode-1.jpg"))
+        put("requestHeaders", JSONObject().put("Authorization", "Bearer token"))
+        put("durationSeconds", 60.0)
+        put("lastPositionSeconds", 0.0)
+        put("isPlayed", false)
+        put("updatedAt", "2026-09-09T12:00:00.000Z")
+      }).toString(),
+    )
+
+    val item = AndroidAutoStore.catalog(context).single()
+
+    assertEquals("https", item.uri.scheme)
+    assertEquals("https://cdn.example.com/episode-1.jpg", item.artworkUri.toString())
+    assertEquals("Bearer token", item.requestHeaders["Authorization"])
+    assertTrue(item.id.startsWith("remote:"))
   }
 
   @Test

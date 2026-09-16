@@ -12,6 +12,7 @@
     "android": {
       "package": "com.podcastme.app",
       "versionCode": 1,
+      "softwareKeyboardLayoutMode": "resize",
       "icon": "./assets/images/podcast-me-icon-android-v2.png",
       "adaptiveIcon": {
         "backgroundColor": "#06142B",

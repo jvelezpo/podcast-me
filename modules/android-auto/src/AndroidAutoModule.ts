@@ -30,6 +30,7 @@ type AndroidAutoSubscription = {
 
 declare class AndroidAutoNativeModule extends NativeModule<AndroidAutoEvents> {
   syncLibrary(serializedLibrary: string): Promise<void>;
+  syncRemoteLibrary(serializedLibrary: string): Promise<void>;
   consumePlaybackUpdates(): Promise<string>;
   getPlaybackState(): Promise<AndroidAutoPlaybackState>;
   playItem(
@@ -52,6 +53,12 @@ export async function syncAndroidAutoLibrary(
   serializedLibrary: string,
 ): Promise<void> {
   await nativeModule?.syncLibrary(serializedLibrary);
+}
+
+export async function syncAndroidAutoRemoteLibrary(
+  serializedLibrary: string,
+): Promise<void> {
+  await nativeModule?.syncRemoteLibrary(serializedLibrary);
 }
 
 export async function consumeAndroidAutoPlaybackUpdates(): Promise<

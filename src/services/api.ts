@@ -34,6 +34,50 @@ export type RemoteAudioStreamSource = {
   headers: Record<string, string>
 }
 
+export type PlaybackDevice = {
+  id?: string
+  platform?: 'ios' | 'android' | 'web' | 'other'
+  appVersion?: string
+}
+
+export type PlaybackEventType =
+  | 'started'
+  | 'progress'
+  | 'paused'
+  | 'seeked'
+  | 'completed'
+
+export type PlaybackEvent = {
+  eventId: string
+  playbackSessionId: string
+  eventType: PlaybackEventType
+  positionMs: number
+  durationMs?: number
+  listenedMs?: number
+  occurredAt: string
+  playbackRate?: number
+  device?: PlaybackDevice
+}
+
+export type PlaybackProgress = {
+  audioId: string
+  positionMs: number
+  durationMs: number | null
+  completed: boolean
+  playbackSessionId: string
+  deviceId: string | null
+  updatedAt: string
+}
+
+type PlaybackReadResult = {
+  playback: PlaybackProgress | null
+}
+
+type PlaybackWriteResult = {
+  eventAccepted: boolean
+  playback: PlaybackProgress
+}
+
 type AudioPage = {
   audios: RemoteAudio[]
   page: number
@@ -42,11 +86,14 @@ type AudioPage = {
 }
 
 export class ApiError extends Error {
+  public readonly status?: number
+
   constructor(
     message: string,
-    public readonly status?: number,
+    status?: number,
   ) {
     super(message)
+    this.status = status
   }
 }
 
@@ -76,6 +123,29 @@ export function listRemoteAudios(
   page: number,
 ): Promise<AudioPage> {
   return request(`/audios?page=${page}&sort=newest`, { accessToken })
+}
+
+export async function getPlaybackProgress(
+  accessToken: string,
+  audioId: string,
+): Promise<PlaybackProgress | null> {
+  const result = await request<PlaybackReadResult>(
+    `/audios/${encodeURIComponent(audioId)}/playback`,
+    { accessToken },
+  )
+  return result.playback
+}
+
+export function recordPlaybackEvent(
+  accessToken: string,
+  audioId: string,
+  event: PlaybackEvent,
+): Promise<PlaybackWriteResult> {
+  return request(`/audios/${encodeURIComponent(audioId)}/playback`, {
+    method: 'PUT',
+    accessToken,
+    body: JSON.stringify(event),
+  })
 }
 
 export function getRemoteAudioStreamUrl(streamUrl: string): string {
@@ -108,7 +178,7 @@ export async function revokeSessionWithRefreshToken(
 
 async function request<T>(
   path: string,
-  options: { method?: 'POST'; body?: string; accessToken?: string } = {},
+  options: { method?: 'POST' | 'PUT'; body?: string; accessToken?: string } = {},
 ): Promise<T> {
   const response = await fetch(`${getApiOrigin()}/api/v1${path}`, {
     method: options.method ?? 'GET',

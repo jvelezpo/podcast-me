@@ -13,6 +13,8 @@ internal data class AutoCatalogItem(
   val id: String,
   val title: String,
   val uri: Uri,
+  val artworkUri: Uri?,
+  val requestHeaders: Map<String, String>,
   val durationMs: Long?,
   val positionMs: Long,
   val isPlayed: Boolean,
@@ -21,21 +23,37 @@ internal data class AutoCatalogItem(
 
 internal object AndroidAutoStore {
   private const val PREFERENCES = "podcast_me_android_auto"
-  private const val CATALOG = "catalog"
+  private const val LEGACY_CATALOG = "catalog"
+  private const val LOCAL_CATALOG = "local_catalog"
+  private const val REMOTE_CATALOG = "remote_catalog"
   private const val PLAYBACK_UPDATES = "playback_updates"
 
   fun syncLibrary(context: Context, serializedLibrary: String) {
     // Parse before saving so a corrupt JS payload cannot replace a valid car catalogue.
     val itemIds = parseCatalog(serializedLibrary).mapTo(mutableSetOf()) { it.id }
-    preferences(context).edit().putString(CATALOG, serializedLibrary).apply()
+    preferences(context).edit()
+      .putString(LOCAL_CATALOG, serializedLibrary)
+      .remove(LEGACY_CATALOG)
+      .apply()
     writeProgress(context, readProgress(context).filterKeys(itemIds::contains))
   }
 
+  fun syncRemoteLibrary(context: Context, serializedLibrary: String) {
+    // Validate before replacing the previous remote catalogue for the same reason as local audio.
+    parseCatalog(serializedLibrary)
+    preferences(context).edit().putString(REMOTE_CATALOG, serializedLibrary).apply()
+  }
+
   fun catalog(context: Context): List<AutoCatalogItem> {
-    val serialized = preferences(context).getString(CATALOG, null) ?: return emptyList()
+    val serialized = listOfNotNull(
+      preferences(context).getString(LOCAL_CATALOG, null)
+        ?: preferences(context).getString(LEGACY_CATALOG, null),
+      preferences(context).getString(REMOTE_CATALOG, null),
+    )
+    if (serialized.isEmpty()) return emptyList()
     val progress = readProgress(context)
 
-    return parseCatalog(serialized).map { item ->
+    return serialized.flatMap(::parseCatalog).map { item ->
       progress[item.id]?.let { update ->
         item.copy(
           durationMs = update.durationMs ?: item.durationMs,
@@ -56,9 +74,7 @@ internal object AndroidAutoStore {
   ) {
     val progress = readProgress(context).toMutableMap()
     val wasPlayed = progress[itemId]?.isPlayed == true ||
-      preferences(context).getString(CATALOG, null)
-        ?.let(::parseCatalog)
-        ?.firstOrNull { it.id == itemId }
+      catalog(context).firstOrNull { it.id == itemId }
         ?.isPlayed == true
     progress[itemId] = PlaybackUpdate(
       positionMs = positionMs.coerceAtLeast(0),
@@ -106,11 +122,19 @@ internal object AndroidAutoStore {
         val title = metadataTitle.ifEmpty { originalTitle.withoutAudioFileExtension() }
         val uri = Uri.parse(value.optString("localUri"))
         val mimeType = if (value.isNull("mimeType")) "" else value.optString("mimeType").trim()
-        val file = uri.path?.let(::File)
+        val requestHeaders = value.optJSONObject("requestHeaders")
+          ?.let(::parseRequestHeaders)
+          .orEmpty()
+        val artworkUri = value.optJSONObject("metadata")
+          ?.optString("coverArtUrl")
+          ?.trim()
+          ?.takeIf(::isHttpUri)
+          ?.let(Uri::parse)
+        val isLocalFile = uri.scheme == "file" && uri.path?.let(::File)?.isFile == true
+        val isRemoteStream = isHttpUri(uri.toString())
 
         if (
-          id.isEmpty() || originalTitle.isEmpty() || uri.scheme != "file" ||
-          file?.isFile != true ||
+          id.isEmpty() || originalTitle.isEmpty() || (!isLocalFile && !isRemoteStream) ||
           (mimeType.isNotEmpty() && !mimeType.startsWith("audio/", ignoreCase = true))
         ) {
           continue
@@ -121,6 +145,8 @@ internal object AndroidAutoStore {
             id = id,
             title = title,
             uri = uri,
+            artworkUri = artworkUri,
+            requestHeaders = requestHeaders,
             durationMs = value.optNullableSeconds("durationSeconds"),
             positionMs = value.optSeconds("lastPositionSeconds"),
             isPlayed = value.optBoolean("isPlayed", false),
@@ -179,6 +205,16 @@ internal object AndroidAutoStore {
       timeZone = TimeZone.getTimeZone("UTC")
     }.parse(value)?.time ?: 0
   }.getOrDefault(0)
+
+  private fun parseRequestHeaders(headers: JSONObject): Map<String, String> = buildMap {
+    headers.keys().forEach { name ->
+      val value = headers.optString(name).trim()
+      if (name.isNotBlank() && value.isNotEmpty()) put(name, value)
+    }
+  }
+
+  private fun isHttpUri(value: String): Boolean =
+    Uri.parse(value).scheme?.lowercase(Locale.US) in setOf("http", "https")
 
   private fun String.withoutAudioFileExtension(): String =
     replace(Regex("(?i)\\.(mp3|m4a|aac|wav|flac|ogg|opus|webm|mp4)$"), "")

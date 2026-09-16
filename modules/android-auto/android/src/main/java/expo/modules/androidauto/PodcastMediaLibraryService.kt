@@ -22,7 +22,12 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
@@ -133,7 +138,23 @@ class PodcastMediaLibraryService : MediaLibraryService() {
   override fun onCreate() {
     super.onCreate()
 
+    val upstreamDataSourceFactory = DefaultDataSource.Factory(
+      this,
+      DefaultHttpDataSource.Factory(),
+    )
+    val mediaSourceFactory = DefaultMediaSourceFactory(this)
+      .setDataSourceFactory(
+        ResolvingDataSource.Factory(upstreamDataSourceFactory) { dataSpec: DataSpec ->
+          val headers = AndroidAutoStore.catalog(this)
+            .firstOrNull { it.uri == dataSpec.uri }
+            ?.requestHeaders
+            .orEmpty()
+          if (headers.isEmpty()) dataSpec else dataSpec.withRequestHeaders(headers)
+        },
+      )
+
     player = ExoPlayer.Builder(this)
+      .setMediaSourceFactory(mediaSourceFactory)
       .setAudioAttributes(
         AudioAttributes.Builder()
           .setUsage(C.USAGE_MEDIA)
@@ -559,7 +580,7 @@ class PodcastMediaLibraryService : MediaLibraryService() {
       .setTitle(item.title)
       .setArtist("Podcast Me")
       .setAlbumTitle("My recordings")
-      .setArtworkUri(artworkUri)
+      .setArtworkUri(item.artworkUri ?: artworkUri)
       .setIsBrowsable(false)
       .setIsPlayable(true)
       .apply { item.durationMs?.let(::setDurationMs) }

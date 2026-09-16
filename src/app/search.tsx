@@ -1,6 +1,6 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
 import { useMemo, useState } from 'react';
-import { FlatList, StyleSheet } from 'react-native';
+import { FlatList, KeyboardAvoidingView, Platform, StyleSheet } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Input, View, XStack, YStack, useMedia } from 'tamagui';
 
@@ -39,10 +39,14 @@ export default function SearchScreen() {
   return (
     <ThemedView flex={1}>
       <SafeAreaView style={styles.safeArea}>
-        <FlatList
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.safeArea}>
+          <FlatList
           data={results}
           keyExtractor={(item) => item.id}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           style={styles.list}
           contentContainerStyle={{
             flexGrow: 1,
@@ -155,7 +159,8 @@ export default function SearchScreen() {
               />
             );
           }}
-        />
+          />
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </ThemedView>
   );

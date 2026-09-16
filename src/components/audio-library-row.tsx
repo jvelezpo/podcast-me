@@ -513,7 +513,7 @@ function AudioMetadataModal({
       <ThemedView flex={1}>
         <SafeAreaView style={styles.safeArea}>
           <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
             style={styles.safeArea}
           >
             <XStack
@@ -546,6 +546,7 @@ function AudioMetadataModal({
 
             <ScrollView
               flex={1}
+              keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
               contentContainerStyle={styles.formContent}
