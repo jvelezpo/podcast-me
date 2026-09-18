@@ -6,6 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
 import { AudioLibraryRow } from '@/components/audio-library-row'
+import { AddToPlaylistSheet } from '@/components/add-to-playlist-sheet'
 import { RemoteAudioRow } from '@/components/remote-audio-row'
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
@@ -38,6 +39,7 @@ import {
 } from '@/services/remote-audio-upload'
 import { buildRemoteMetadataUpdate } from '@/services/remote-audio-metadata'
 import { formatPlaybackTime, getAudioItemTitle } from '@/utils/audio-display'
+import type { PlaylistAudioRef } from '@/models/playlist'
 
 type CollectionItem =
   | { kind: 'local'; item: LoadedAudioItem }
@@ -52,6 +54,7 @@ type RemoteCollection = {
 export default function HomeScreen() {
   const {
     library,
+    playlists,
     playback,
     openPlayer,
     openRemotePlayer,
@@ -82,6 +85,10 @@ export default function HomeScreen() {
     {},
   )
   const [uploadingItemId, setUploadingItemId] = useState<string | null>(null)
+  const [playlistSheet, setPlaylistSheet] = useState<{
+    ref: PlaylistAudioRef
+    title: string
+  } | null>(null)
   const [uploadProgress, setUploadProgress] =
     useState<RemoteAudioUploadProgress | null>(null)
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({})
@@ -323,6 +330,11 @@ export default function HomeScreen() {
       showToast('There are no more files to play.')
     } else if (outcome.removed && shouldPlayNext && nextItem === null) {
       showToast('There are no more playable files.')
+    }
+
+    if (outcome.removed) {
+      // Keep playlists consistent: dropping a file removes it from every playlist.
+      void playlists.pruneLocalAudio(item.id)
     }
   }
 
@@ -816,6 +828,12 @@ export default function HomeScreen() {
                   }
                   onDownload={(audio) => void handleDownloadRemoteAudio(audio)}
                   onRemoveDownload={handleRemoveRemoteDownload}
+                  onAddToPlaylist={(audio) =>
+                    setPlaylistSheet({
+                      ref: { kind: 'remote', audioId: audio.id },
+                      title: audio.title,
+                    })
+                  }
                 />
               )
             }
@@ -864,12 +882,28 @@ export default function HomeScreen() {
                 onSaveMetadata={library.updateAudioMetadata}
                 onTogglePlayback={handleToggleLocalPlayback}
                 onUpload={(rowItem) => void handleUploadLocalItem(rowItem)}
+                onAddToPlaylist={(rowItem) =>
+                  setPlaylistSheet({
+                    ref: { kind: 'local', audioId: rowItem.id },
+                    title: getAudioItemTitle(rowItem),
+                  })
+                }
               />
             )
           }}
         />
         {toastMessage && (
           <ToastMessage message={toastMessage} hasPlayer={hasPlayer} />
+        )}
+        {playlistSheet && (
+          <AddToPlaylistSheet
+            audioRef={playlistSheet.ref}
+            audioTitle={playlistSheet.title}
+            onClose={() => setPlaylistSheet(null)}
+            onAdded={(playlistName) =>
+              showToast(`Added to “${playlistName}”.`)
+            }
+          />
         )}
       </SafeAreaView>
     </ThemedView>

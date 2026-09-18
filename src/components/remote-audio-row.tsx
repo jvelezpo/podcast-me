@@ -24,8 +24,9 @@ type RemoteAudioRowProps = {
   playbackError: string | null
   onOpenPlayer: (audio: RemoteAudio) => void
   onTogglePlayback: (audio: RemoteAudio) => void
-  onDownload: (audio: RemoteAudio) => void
-  onRemoveDownload: (audio: RemoteAudio) => void
+  onDownload?: (audio: RemoteAudio) => void
+  onRemoveDownload?: (audio: RemoteAudio) => void
+  onAddToPlaylist?: (audio: RemoteAudio) => void
 }
 
 export function RemoteAudioRow({
@@ -42,6 +43,7 @@ export function RemoteAudioRow({
   onTogglePlayback,
   onDownload,
   onRemoveDownload,
+  onAddToPlaylist,
 }: RemoteAudioRowProps) {
   const theme = useTheme()
   const metadata = getRemoteAudioMetadata(audio.metadata)
@@ -174,8 +176,8 @@ export function RemoteAudioRow({
               disabled={downloadState === 'downloading'}
               onPress={() =>
                 downloadState === 'downloaded'
-                  ? onRemoveDownload(audio)
-                  : onDownload(audio)
+                  ? onRemoveDownload?.(audio)
+                  : onDownload?.(audio)
               }
               backgroundColor="$backgroundSelected"
             >
@@ -195,6 +197,21 @@ export function RemoteAudioRow({
               )}
             </AppButton>
           </YStack>
+        ) : null}
+        {onAddToPlaylist ? (
+          <AppButton
+            tone="icon"
+            accessibilityLabel={`Add ${audio.title} to playlist`}
+            onPress={() => onAddToPlaylist(audio)}
+            backgroundColor="$backgroundSelected"
+          >
+            <SymbolView
+              name={PLAYLIST_ICON}
+              size={20}
+              tintColor={theme.accent}
+              weight="bold"
+            />
+          </AppButton>
         ) : null}
         <AppButton
           tone="icon"
@@ -250,6 +267,11 @@ const PLAY_ICON: SymbolViewProps['name'] = {
   ios: 'play.fill',
   android: 'play_arrow',
   web: 'play_arrow',
+}
+const PLAYLIST_ICON: SymbolViewProps['name'] = {
+  ios: 'music.note.list',
+  android: 'queue_music',
+  web: 'queue_music',
 }
 const PAUSE_ICON: SymbolViewProps['name'] = {
   ios: 'pause',

@@ -56,6 +56,7 @@ type AudioLibraryRowProps = {
   ) => Promise<boolean>
   onTogglePlayback: (item: LoadedAudioItem) => void
   onUpload: (item: LoadedAudioItem) => void
+  onAddToPlaylist?: (item: LoadedAudioItem) => void
 }
 
 export function AudioLibraryRow({
@@ -82,6 +83,7 @@ export function AudioLibraryRow({
   onSaveMetadata,
   onTogglePlayback,
   onUpload,
+  onAddToPlaylist,
 }: AudioLibraryRowProps) {
   const theme = useTheme()
   const [dragY] = useState(() => new Animated.Value(0))
@@ -467,7 +469,24 @@ export function AudioLibraryRow({
             gap={Spacing.two}
             paddingHorizontal={Spacing.three}
             paddingBottom={Spacing.three}
+            flexWrap="wrap"
           >
+            {onAddToPlaylist && (
+              <AppButton
+                tone="outlined"
+                accessibilityLabel={`Add ${title} to playlist`}
+                onPress={() => onAddToPlaylist(item)}
+                flex={1}
+                mt={5}
+              >
+                <SymbolView
+                  name={PLAYLIST_ICON}
+                  size={17}
+                  tintColor={theme.text}
+                />
+                <ThemedText type="smallBold">Playlist</ThemedText>
+              </AppButton>
+            )}
             <AppButton
               tone="outlined"
               accessibilityLabel={`Edit metadata for ${title}`}
@@ -802,6 +821,11 @@ const DELETE_ICON: SymbolViewProps['name'] = {
   ios: 'trash',
   android: 'delete_outline',
   web: 'delete_outline',
+}
+const PLAYLIST_ICON: SymbolViewProps['name'] = {
+  ios: 'music.note.list',
+  android: 'queue_music',
+  web: 'queue_music',
 }
 const EDIT_ICON: SymbolViewProps['name'] = {
   ios: 'pencil',

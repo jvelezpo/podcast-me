@@ -9,10 +9,15 @@ import {
 
 import { useAudioLibrary } from '@/hooks/use-audio-library'
 import { useAudioLibraryPlayer } from '@/hooks/use-audio-library-player'
+import { usePlaylists } from '@/hooks/use-playlists'
 import { useRemoteAudioPlayer } from '@/hooks/use-remote-audio-player'
 import { useAuth } from '@/contexts/auth-context'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
 import type { RemoteAudio } from '@/services/api'
+import {
+  findNextQueueEntry,
+  type QueueEntry,
+} from '@/services/playback-queue'
 
 type PlayerItem =
   | { kind: 'local'; item: LoadedAudioItem }
@@ -25,6 +30,7 @@ export type AutoAdvanceHandlers = {
 
 type AudioLibraryContextValue = {
   library: ReturnType<typeof useAudioLibrary>
+  playlists: ReturnType<typeof usePlaylists>
   playback: ReturnType<typeof useAudioLibraryPlayer>
   remotePlayback: ReturnType<typeof useRemoteAudioPlayer>
   isPlayerOpen: boolean
@@ -33,6 +39,9 @@ type AudioLibraryContextValue = {
   openRemotePlayer: (audio: RemoteAudio) => void
   closePlayer: () => void
   setAutoAdvanceHandlers: (handlers: AutoAdvanceHandlers) => void
+  /** Ordered queue used when playing from a playlist; null means library order. */
+  setPlaybackQueue: (entries: readonly QueueEntry[] | null, isOnline: boolean) => void
+  playQueueEntry: (entry: QueueEntry, queue: readonly QueueEntry[], isOnline: boolean) => void
 }
 
 const AudioLibraryContext = createContext<AudioLibraryContextValue | null>(null)
@@ -45,17 +54,39 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
     sendRemotePlaybackEvent,
   } = useAuth()
   const library = useAudioLibrary()
+  const playlists = usePlaylists()
   const autoAdvanceRef = useRef<AutoAdvanceHandlers>({})
+  const queueRef = useRef<{ entries: QueueEntry[]; isOnline: boolean } | null>(null)
   const setAutoAdvanceHandlers = useCallback(
     (handlers: AutoAdvanceHandlers) => {
       autoAdvanceRef.current = handlers
     },
     [],
   )
+  const setPlaybackQueue = useCallback(
+    (entries: readonly QueueEntry[] | null, isOnline: boolean) => {
+      queueRef.current = entries ? { entries: [...entries], isOnline } : null
+    },
+    []
+  )
   const handleLocalFinished = useCallback((finishedItemId: string) => {
+    const queue = queueRef.current
+
+    if (queue) {
+      advanceQueueRef.current?.('local', finishedItemId, queue)
+      return
+    }
+
     autoAdvanceRef.current.onLocalFinished?.(finishedItemId)
   }, [])
   const handleRemoteFinished = useCallback((finishedAudioId: string) => {
+    const queue = queueRef.current
+
+    if (queue) {
+      advanceQueueRef.current?.('remote', finishedAudioId, queue)
+      return
+    }
+
     autoAdvanceRef.current.onRemoteFinished?.(finishedAudioId)
   }, [])
   const playback = useAudioLibraryPlayer(
@@ -84,11 +115,74 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
     setIsPlayerOpen(false)
     setPlayerItem(null)
   }, [])
+  const toggleLocalEntry = useCallback(
+    (item: LoadedAudioItem) => {
+      if (remotePlayback.activeAudioId || remotePlayback.isTransitioning) {
+        remotePlayback.stop()
+      }
+
+      playback.togglePlayback(item)
+    },
+    [playback, remotePlayback]
+  )
+  const toggleRemoteEntry = useCallback(
+    (audio: RemoteAudio) => {
+      if (remotePlayback.activeAudioId !== audio.id && playback.activeItemId) {
+        void playback.dismissPlayer().then((didStop) => {
+          if (didStop) {
+            remotePlayback.togglePlayback(audio)
+          }
+        })
+        return
+      }
+
+      remotePlayback.togglePlayback(audio)
+    },
+    [playback, remotePlayback]
+  )
+  const advanceQueueRef = useRef<
+    | ((
+      finishedKind: QueueEntry['kind'],
+      finishedId: string,
+      queue: { entries: QueueEntry[]; isOnline: boolean }
+    ) => void)
+    | null
+  >(null)
+  advanceQueueRef.current = (finishedKind, finishedId, queue) => {
+    const next = findNextQueueEntry(queue.entries, finishedKind, finishedId, queue.isOnline)
+
+    if (!next) {
+      return
+    }
+
+    if (next.kind === 'local') {
+      openPlayer(next.item)
+      toggleLocalEntry(next.item)
+    } else {
+      openRemotePlayer(next.audio)
+      toggleRemoteEntry(next.audio)
+    }
+  }
+  const playQueueEntry = useCallback(
+    (entry: QueueEntry, queue: readonly QueueEntry[], isOnline: boolean) => {
+      queueRef.current = { entries: [...queue], isOnline }
+
+      if (entry.kind === 'local') {
+        openPlayer(entry.item)
+        toggleLocalEntry(entry.item)
+      } else {
+        openRemotePlayer(entry.audio)
+        toggleRemoteEntry(entry.audio)
+      }
+    },
+    [openPlayer, openRemotePlayer, toggleLocalEntry, toggleRemoteEntry]
+  )
 
   return (
     <AudioLibraryContext.Provider
       value={{
         library,
+        playlists,
         playback,
         remotePlayback,
         isPlayerOpen,
@@ -97,6 +191,8 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
         openRemotePlayer,
         closePlayer,
         setAutoAdvanceHandlers,
+        setPlaybackQueue,
+        playQueueEntry,
       }}
     >
       {children}
