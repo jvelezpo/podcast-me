@@ -11,7 +11,7 @@ import {
   type AccessibilityActionEvent,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { ScrollView, View, XStack, YStack, styled } from 'tamagui'
+import { ScrollView, Spinner, View, XStack, YStack, styled } from 'tamagui'
 
 import { EpisodeArtwork } from '@/components/episode-artwork'
 import { ThemedText } from '@/components/themed-text'
@@ -42,6 +42,11 @@ type AudioLibraryRowProps = {
   isDeleteDisabled: boolean
   isMetadataDisabled: boolean
   isReorderDisabled: boolean
+  canUpload: boolean
+  isUploading: boolean
+  isUploaded: boolean
+  uploadProgressPercent: number | null
+  uploadError: string | null
   onDelete: (item: LoadedAudioItem) => void
   onOpenPlayer: (item: LoadedAudioItem) => void
   onReorder: (itemId: string, offset: number) => void
@@ -50,6 +55,7 @@ type AudioLibraryRowProps = {
     metadata: AudioMetadata,
   ) => Promise<boolean>
   onTogglePlayback: (item: LoadedAudioItem) => void
+  onUpload: (item: LoadedAudioItem) => void
 }
 
 export function AudioLibraryRow({
@@ -65,11 +71,17 @@ export function AudioLibraryRow({
   isDeleteDisabled,
   isMetadataDisabled,
   isReorderDisabled,
+  canUpload,
+  isUploading,
+  isUploaded,
+  uploadProgressPercent,
+  uploadError,
   onDelete,
   onOpenPlayer,
   onReorder,
   onSaveMetadata,
   onTogglePlayback,
+  onUpload,
 }: AudioLibraryRowProps) {
   const theme = useTheme()
   const [dragY] = useState(() => new Animated.Value(0))
@@ -337,6 +349,30 @@ export function AudioLibraryRow({
                         : 'Unplayed'}
                 </ThemedText>
               </XStack>
+              {isUploading ? (
+                <ThemedText type="metadata" color="$accent">
+                  {uploadProgressPercent !== null
+                    ? `Uploading… ${uploadProgressPercent}%`
+                    : 'Uploading…'}
+                </ThemedText>
+              ) : null}
+              {isUploaded ? (
+                <XStack alignItems="center" gap={Spacing.one}>
+                  <SymbolView
+                    name={UPLOADED_ICON}
+                    size={14}
+                    tintColor={theme.accent}
+                  />
+                  <ThemedText type="metadata" color="$accent">
+                    Uploaded · in your account library
+                  </ThemedText>
+                </XStack>
+              ) : null}
+              {uploadError ? (
+                <ThemedText type="metadata" color="$danger">
+                  {uploadError}
+                </ThemedText>
+              ) : null}
             </YStack>
           </AppButton>
 
@@ -344,6 +380,27 @@ export function AudioLibraryRow({
             <ThemedText type="metadata" themeColor="textSecondary">
               {formatPlaybackTime(durationSeconds)}
             </ThemedText>
+            {canUpload && !isUploaded ? (
+              <AppButton
+                tone="icon"
+                accessibilityLabel={`Upload ${title} to your account library`}
+                accessibilityState={{ busy: isUploading, disabled: isUploading }}
+                disabled={isUploading}
+                onPress={() => onUpload(item)}
+                backgroundColor="$backgroundSelected"
+              >
+                {isUploading ? (
+                  <Spinner size="small" color="$accent" />
+                ) : (
+                  <SymbolView
+                    name={UPLOAD_ICON}
+                    size={20}
+                    tintColor={theme.accent}
+                    weight="bold"
+                  />
+                )}
+              </AppButton>
+            ) : null}
             <AppButton
               tone="icon"
               accessibilityLabel={`${isBusy ? 'Loading' : isActive && isPlaying ? 'Pause' : itemError ? 'Retry' : 'Play'} ${title}`}
@@ -715,6 +772,16 @@ const PLAY_ICON: SymbolViewProps['name'] = {
   ios: 'play.fill',
   android: 'play_arrow',
   web: 'play_arrow',
+}
+const UPLOAD_ICON: SymbolViewProps['name'] = {
+  ios: 'arrow.up.circle',
+  android: 'cloud_upload',
+  web: 'cloud_upload',
+}
+const UPLOADED_ICON: SymbolViewProps['name'] = {
+  ios: 'checkmark.icloud.fill',
+  android: 'cloud_done',
+  web: 'cloud_done',
 }
 const PAUSE_ICON: SymbolViewProps['name'] = {
   ios: 'pause.fill',

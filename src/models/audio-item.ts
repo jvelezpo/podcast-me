@@ -29,6 +29,8 @@ export type AudioItem = {
   sizeBytes: number | null;
   /** Lowercase MD5 of the app-owned copy, used only to prevent duplicate imports. */
   contentFingerprint: string | null;
+  /** Account-library id returned when this file was uploaded, or null when never uploaded. */
+  remoteAudioId: string | null;
   /** Total playback duration in seconds, or null until the player reports it. */
   durationSeconds: number | null;
   /** Resume position in seconds. */

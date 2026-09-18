@@ -1,6 +1,6 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
 import { useNetworkState } from 'expo-network'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, FlatList, Platform, RefreshControl, StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
@@ -23,6 +23,7 @@ import { useTheme } from '@/hooks/use-theme'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
 import type { RemoteAudio } from '@/services/api'
 import { findNextQueueEntry } from '@/services/playback-queue'
+import { reconcileLibraryAudio } from '@/services/audio-reconciliation'
 import {
   downloadRemoteAudioFile,
   getRemoteAudioDownloadState,
@@ -31,6 +32,11 @@ import {
   removeRemoteAudioDownload,
   subscribeToRemoteAudioFileCache,
 } from '@/services/remote-audio-file-cache'
+import {
+  type RemoteAudioUploadProgress,
+  type UploadableAudioAsset,
+} from '@/services/remote-audio-upload'
+import { buildRemoteMetadataUpdate } from '@/services/remote-audio-metadata'
 import { formatPlaybackTime, getAudioItemTitle } from '@/utils/audio-display'
 
 type CollectionItem =
@@ -53,7 +59,8 @@ export default function HomeScreen() {
     playerItem,
     setAutoAdvanceHandlers,
   } = useAudioLibraryContext()
-  const { getRemoteAudioStreamSource, loadRemoteAudios, user } = useAuth()
+  const { getRemoteAudioStreamSource, loadRemoteAudios, uploadRemoteAudio, updateRemoteAudioMetadata, user } =
+    useAuth()
   const media = useMedia()
   const theme = useTheme()
   const networkState = useNetworkState()
@@ -74,6 +81,10 @@ export default function HomeScreen() {
   const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>(
     {},
   )
+  const [uploadingItemId, setUploadingItemId] = useState<string | null>(null)
+  const [uploadProgress, setUploadProgress] =
+    useState<RemoteAudioUploadProgress | null>(null)
+  const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({})
   const [remoteCollection, setRemoteCollection] = useState<RemoteCollection>({
     userId: null,
     audios: [],
@@ -91,13 +102,25 @@ export default function HomeScreen() {
   )
   const visibleRemoteCollection =
     user && remoteCollection.userId === user.id ? remoteCollection : null
+  const reconciliation = useMemo(
+    () =>
+      reconcileLibraryAudio(
+        library.items,
+        visibleRemoteCollection?.audios ?? null,
+        isOnline,
+      ),
+    [isOnline, library.items, visibleRemoteCollection],
+  )
   const collectionItems: CollectionItem[] = [
     ...library.items.map((item) => ({ kind: 'local' as const, item })),
-    ...(visibleRemoteCollection?.audios ?? []).map((audio) => ({
-      kind: 'remote' as const,
-      audio,
-      isCached: visibleRemoteCollection?.cachedAudioIds.has(audio.id) ?? false,
-    })),
+    ...(visibleRemoteCollection?.audios ?? [])
+      .filter((audio) => !reconciliation.hiddenRemoteIds.has(audio.id))
+      .map((audio) => ({
+        kind: 'remote' as const,
+        audio,
+        isCached:
+          visibleRemoteCollection?.cachedAudioIds.has(audio.id) ?? false,
+      })),
   ]
   const contentContainerStyle = {
     flexGrow: 1,
@@ -469,6 +492,93 @@ export default function HomeScreen() {
     [user],
   )
 
+  // Local rows are the not-uploaded audios: they get an upload icon.
+  // Remote rows already live in the account library, so they never show one.
+  const canUploadRow = Platform.OS !== 'web' && user !== null
+
+  const handleUploadLocalItem = useCallback(
+    async (item: LoadedAudioItem) => {
+      if (!user || Platform.OS === 'web' || uploadingItemId !== null) {
+        return
+      }
+
+      if (!isOnline) {
+        setUploadErrors((previous) => ({
+          ...previous,
+          [item.id]: 'Connect to the internet to upload audio.',
+        }))
+        return
+      }
+
+      setUploadErrors((previous) => {
+        if (!(item.id in previous)) {
+          return previous
+        }
+
+        const next = { ...previous }
+        delete next[item.id]
+        return next
+      })
+      setUploadingItemId(item.id)
+      setUploadProgress({ bytesSent: 0, totalBytes: 0 })
+
+      const asset: UploadableAudioAsset = {
+        uri: item.localUri,
+        name: item.originalName,
+        mimeType: item.mimeType,
+        size: item.sizeBytes,
+      }
+
+      try {
+        const audio = await uploadRemoteAudio(asset, {
+          onProgress: ({ bytesSent, totalBytes }) =>
+            setUploadProgress({ bytesSent, totalBytes }),
+        })
+        // Persist the server-returned unique id so this file is recognised
+        // as uploaded (and not shown twice) on every later library pull.
+        await library.linkUploadedAudio(item.id, audio.id)
+        // The file bytes carry no app-side details, so push the local
+        // metadata (including the artwork URL) to the new cloud copy.
+        const metadataUpdate = buildRemoteMetadataUpdate(item.metadata)
+
+        if (metadataUpdate) {
+          try {
+            await updateRemoteAudioMetadata(audio.id, metadataUpdate)
+          } catch {
+            showToast(
+              `“${audio.title}” was uploaded, but its artwork and details could not be synced.`,
+            )
+            await handleRefresh()
+            return
+          }
+        }
+
+        showToast(`“${audio.title}” was uploaded to your library.`)
+        await handleRefresh()
+      } catch (error) {
+        setUploadErrors((previous) => ({
+          ...previous,
+          [item.id]:
+            error instanceof Error
+              ? error.message
+              : `“${getAudioItemTitle(item)}” could not be uploaded. Try again.`,
+        }))
+      } finally {
+        setUploadProgress(null)
+        setUploadingItemId(null)
+      }
+    },
+    [
+      handleRefresh,
+      isOnline,
+      library,
+      uploadingItemId,
+      uploadRemoteAudio,
+      updateRemoteAudioMetadata,
+      user,
+    ],
+  )
+
   return (
     <ThemedView flex={1}>
       <SafeAreaView style={styles.safeArea}>
@@ -712,6 +822,18 @@ export default function HomeScreen() {
 
             const localItem = item.item
             const isActive = playback.activeItemId === localItem.id
+            const isUploadingItem = uploadingItemId === localItem.id
+            const isUploaded = reconciliation.uploadedLocalIds.has(localItem.id)
+            const itemUploadProgress =
+              isUploadingItem && uploadProgress && uploadProgress.totalBytes > 0
+                ? Math.min(
+                    100,
+                    Math.round(
+                      (uploadProgress.bytesSent / uploadProgress.totalBytes) *
+                        100,
+                    ),
+                  )
+                : null
 
             return (
               <AudioLibraryRow
@@ -729,6 +851,11 @@ export default function HomeScreen() {
                 isReorderDisabled={isLibraryBusy || library.items.length < 2}
                 loadedDurationSeconds={playback.durationSeconds}
                 playbackError={playback.playbackError}
+                canUpload={canUploadRow && !isUploaded}
+                isUploading={isUploadingItem}
+                isUploaded={isUploaded}
+                uploadProgressPercent={itemUploadProgress}
+                uploadError={uploadErrors[localItem.id] ?? null}
                 onDelete={confirmRemoveAudio}
                 onOpenPlayer={openPlayer}
                 onReorder={(itemId, offset) =>
@@ -736,6 +863,7 @@ export default function HomeScreen() {
                 }
                 onSaveMetadata={library.updateAudioMetadata}
                 onTogglePlayback={handleToggleLocalPlayback}
+                onUpload={(rowItem) => void handleUploadLocalItem(rowItem)}
               />
             )
           }}

@@ -85,6 +85,24 @@ type AudioPage = {
   hasMore: boolean
 }
 
+export type AudioUploadInput = {
+  fileName: string
+  contentType?: string
+  size: number
+}
+
+export type AudioUploadGrant = {
+  uploadId: string
+  uploadUrl: string
+  method: 'PUT'
+  contentType: string
+  expiresIn: number
+}
+
+type AudioUploadGrantResult = {
+  upload: AudioUploadGrant
+}
+
 export class ApiError extends Error {
   public readonly status?: number
 
@@ -120,6 +138,64 @@ export function listRemoteAudios(
   page: number,
 ): Promise<AudioPage> {
   return request(`/audios?page=${page}&sort=newest`, { accessToken })
+}
+
+export function createAudioUpload(
+  accessToken: string,
+  input: AudioUploadInput,
+): Promise<AudioUploadGrant> {
+  return request<AudioUploadGrantResult>('/audios/uploads', {
+    method: 'POST',
+    accessToken,
+    body: JSON.stringify({
+      fileName: input.fileName,
+      ...(input.contentType ? { contentType: input.contentType } : {}),
+      size: input.size,
+    }),
+  }).then((result) => result.upload)
+}
+
+export function completeAudioUpload(
+  accessToken: string,
+  uploadId: string,
+  input: AudioUploadInput,
+): Promise<{ audio: RemoteAudio }> {
+  return request<{ audio: RemoteAudio }>(
+    `/audios/uploads/${encodeURIComponent(uploadId)}/complete`,
+    {
+      method: 'POST',
+      accessToken,
+      body: JSON.stringify({
+        fileName: input.fileName,
+        ...(input.contentType ? { contentType: input.contentType } : {}),
+        size: input.size,
+      }),
+    },
+  )
+}
+
+export type RemoteAudioMetadataUpdate = {
+  title?: string
+  artist?: string
+  album?: string
+  releaseYear?: string
+  coverArtUrl?: string
+  description?: string
+}
+
+export function updateAudioMetadata(
+  accessToken: string,
+  audioId: string,
+  update: RemoteAudioMetadataUpdate,
+): Promise<{ audio: RemoteAudio }> {
+  return request<{ audio: RemoteAudio }>(
+    `/audios/${encodeURIComponent(audioId)}`,
+    {
+      method: 'PATCH',
+      accessToken,
+      body: JSON.stringify(update),
+    },
+  )
 }
 
 export async function getPlaybackProgress(
@@ -212,7 +288,7 @@ export async function revokeSessionWithRefreshToken(
 async function request<T>(
   path: string,
   options: {
-    method?: 'POST' | 'PUT'
+    method?: 'POST' | 'PUT' | 'PATCH'
     body?: string
     accessToken?: string
   } = {},
@@ -251,8 +327,8 @@ async function request<T>(
 }
 
 function getApiOrigin(): string {
-  // const apiOrigin = process.env.EXPO_PUBLIC_API_ORIGIN
-  const apiOrigin = 'http://192.168.40.172:3000'
+  const apiOrigin = process.env.EXPO_PUBLIC_API_ORIGIN
+  // const apiOrigin = 'http://192.168.40.172:3000'
 
   if (typeof apiOrigin !== 'string' || !apiOrigin) {
     throw new ApiError('Sign-in is not configured for this app build.')

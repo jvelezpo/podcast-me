@@ -414,6 +414,50 @@ export function useAudioLibrary() {
     }
   }, []);
 
+  const linkUploadedAudio = useCallback(async (
+    itemId: string,
+    remoteAudioId: string
+  ): Promise<boolean> => {
+    if (mutationInProgress.current || importInProgress.current) {
+      return false;
+    }
+
+    const previousItems = itemsRef.current;
+    const currentItem = previousItems.find((item) => item.id === itemId);
+
+    if (!currentItem || currentItem.remoteAudioId === remoteAudioId) {
+      return currentItem !== undefined;
+    }
+
+    const nextItems = previousItems.map((item) =>
+      item.id === itemId
+        ? { ...item, remoteAudioId, updatedAt: new Date().toISOString() }
+        : item
+    );
+
+    mutationInProgress.current = true;
+    setIsMutating(true);
+    itemsRef.current = nextItems;
+    setItems(nextItems);
+
+    try {
+      await saveAudioLibrary(nextItems);
+      return true;
+    } catch {
+      itemsRef.current = previousItems;
+      setItems(previousItems);
+      setNotice({
+        kind: 'warning',
+        title: 'Upload link not saved',
+        message: 'The audio was uploaded, but the link to your library copy could not be saved.',
+      });
+      return false;
+    } finally {
+      mutationInProgress.current = false;
+      setIsMutating(false);
+    }
+  }, []);
+
   const updateAudioItem = useCallback(
     async (itemId: string, update: AudioItemPlaybackUpdate): Promise<boolean> => {
       const currentItem = itemsRef.current.find((item) => item.id === itemId);
@@ -474,6 +518,7 @@ export function useAudioLibrary() {
     reorderAudio,
     updateAudioMetadata,
     updateAudioItem,
+    linkUploadedAudio,
     dismissNotice: () => setNotice(null),
   };
 }

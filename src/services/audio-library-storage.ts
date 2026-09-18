@@ -215,6 +215,7 @@ function toStoredAudioItem(item: AudioItem): AudioItem {
     mimeType: item.mimeType,
     sizeBytes: item.sizeBytes,
     contentFingerprint: item.contentFingerprint ?? null,
+    remoteAudioId: item.remoteAudioId ?? null,
     durationSeconds: item.durationSeconds,
     lastPositionSeconds: item.lastPositionSeconds,
     isPlayed: item.isPlayed ?? false,
@@ -238,6 +239,7 @@ function isAudioItem(value: unknown): value is AudioItem {
     isNullableString(item.mimeType) &&
     isNullableNonNegativeNumber(item.sizeBytes) &&
     isOptionalFingerprint(item.contentFingerprint) &&
+    isOptionalRemoteAudioId(item.remoteAudioId) &&
     isNullableNonNegativeNumber(item.durationSeconds) &&
     isNonNegativeNumber(item.lastPositionSeconds) &&
     isOptionalBoolean(item.isPlayed) &&
@@ -315,6 +317,14 @@ function isOptionalFingerprint(value: unknown): value is string | null | undefin
     value === undefined ||
     value === null ||
     (typeof value === 'string' && /^[a-fA-F0-9]{32}$/.test(value))
+  );
+}
+
+function isOptionalRemoteAudioId(value: unknown): value is string | null | undefined {
+  return (
+    value === undefined ||
+    value === null ||
+    (typeof value === 'string' && value.trim().length > 0)
   );
 }
 

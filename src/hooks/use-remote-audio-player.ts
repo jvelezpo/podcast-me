@@ -122,6 +122,12 @@ export function useRemoteAudioPlayer(
         durationSeconds,
         playbackRate: playbackRateRef.current,
       })
+
+      if (!event) {
+        // Filtered as noise (stalled heartbeat, no-op seek): nothing to store.
+        return
+      }
+
       const send = async () => {
         const device = await getPlaybackDevice()
         const eventWithDevice = { ...event, device }

@@ -22,10 +22,12 @@ import {
   refreshSession,
   requestSignInCode,
   type RemoteAudio,
+  type RemoteAudioMetadataUpdate,
   type RemoteAudioStreamSource,
   revokeSession,
   revokeSessionWithRefreshToken,
   type Session,
+  updateAudioMetadata,
   verifySignInCode,
 } from '@/services/api'
 import {
@@ -43,6 +45,11 @@ import {
   getCachedRemoteAudioSource,
   recordRemoteAudioPlayback,
 } from '@/services/remote-audio-file-cache'
+import {
+  type RemoteAudioUploadProgress,
+  type UploadableAudioAsset,
+  uploadPickedAudioAsset,
+} from '@/services/remote-audio-upload'
 
 type AuthContextValue = {
   isRestoring: boolean
@@ -66,6 +73,16 @@ type AuthContextValue = {
     audioId: string,
     event: PlaybackEvent,
   ) => Promise<void>
+  updateRemoteAudioMetadata: (
+    audioId: string,
+    update: RemoteAudioMetadataUpdate,
+  ) => Promise<RemoteAudio>
+  uploadRemoteAudio: (
+    asset: UploadableAudioAsset,
+    options?: {
+      onProgress?: (progress: RemoteAudioUploadProgress) => void
+    },
+  ) => Promise<RemoteAudio>
   refreshProfile: () => Promise<void>
   signOut: () => Promise<void>
 }
@@ -355,6 +372,80 @@ export function AuthProvider({ children }: PropsWithChildren) {
     [requestWithCurrentSession],
   )
 
+  const updateRemoteAudioMetadata = useCallback(
+    async (
+      audioId: string,
+      update: RemoteAudioMetadataUpdate,
+    ): Promise<RemoteAudio> => {
+      const result = await requestWithCurrentSession((accessToken) =>
+        updateAudioMetadata(accessToken, audioId, update),
+      )
+
+      if (!result) {
+        throw new ApiError('Sign in to update audio details.', 401)
+      }
+
+      return result.audio
+    },
+    [requestWithCurrentSession],
+  )
+
+  const getFreshAccessToken = useCallback(
+    async (forceRefresh = false): Promise<string> => {
+      if (!session) {
+        throw new ApiError('Sign in to upload audio to your library.', 401)
+      }
+
+      let activeSession = session
+
+      if (forceRefresh || hasAccessTokenExpired(activeSession)) {
+        activeSession = await rotateSessionForProvider(activeSession)
+        setSession(activeSession)
+      }
+
+      return activeSession.accessToken
+    },
+    [rotateSessionForProvider, session],
+  )
+
+  const uploadRemoteAudio = useCallback(
+    async (
+      asset: UploadableAudioAsset,
+      options?: {
+        onProgress?: (progress: RemoteAudioUploadProgress) => void
+      },
+    ): Promise<RemoteAudio> => {
+      if (!session) {
+        throw new ApiError('Sign in to upload audio to your library.', 401)
+      }
+
+      try {
+        const audio = await uploadPickedAudioAsset(
+          getFreshAccessToken,
+          asset,
+          options,
+        )
+
+        clearRemoteAudioCache(session.user.id)
+        await refreshProfileForSession(session).catch(() => undefined)
+
+        return audio
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          clearRemoteAudioCache(session.user.id)
+          await clearRemoteAudioFileCache(session.user.id)
+          setSession(null)
+          setLibraryTotal(null)
+          setProfileError(null)
+          await clearSession()
+        }
+
+        throw error
+      }
+    },
+    [getFreshAccessToken, refreshProfileForSession, session],
+  )
+
   const signOut = useCallback(async () => {
     try {
       if (session) {
@@ -399,6 +490,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
         recordRemoteAudioPlayback: recordRemotePlayback,
         getRemotePlaybackProgress,
         sendRemotePlaybackEvent,
+        updateRemoteAudioMetadata,
+        uploadRemoteAudio,
         refreshProfile,
         signOut,
       }}

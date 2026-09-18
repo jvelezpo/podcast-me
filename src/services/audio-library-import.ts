@@ -85,6 +85,7 @@ export async function pickAndCopyAudioFiles(
             ? asset.size
             : destination.size,
         contentFingerprint,
+        remoteAudioId: null,
         durationSeconds: null,
         lastPositionSeconds: 0,
         isPlayed: false,

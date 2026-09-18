@@ -9,6 +9,10 @@ export type PlaybackEventSession = {
   id: string
   isListening: boolean
   lastEventAt: number
+  /** Last observed position, including from filtered-out events. */
+  lastPositionMs: number | null
+  /** Last observed playback rate, including from filtered-out events. */
+  lastPlaybackRate: number | null
 }
 
 type CreatePlaybackEventInput = {
@@ -29,13 +33,37 @@ export function createPlaybackEventSession(
     id: createPlaybackUuid(),
     isListening: false,
     lastEventAt: now,
+    lastPositionMs: null,
+    lastPlaybackRate: null,
   }
 }
 
+/**
+ * Seeks smaller than this carry no resume or analytics value and are
+ * dropped so scrub jitter does not pollute listening history.
+ */
+export const SEEK_NOISE_THRESHOLD_MS = 1_000
+
+/**
+ * Creates the next event for a session, or null when the event carries no
+ * new information and should not be stored:
+ *
+ * - `progress` heartbeats while the position is stalled (buffering) or the
+ *   rate is unchanged would otherwise record phantom wall-clock listening
+ *   time at an identical position.
+ * - `seeked` events that barely move the position change neither resume
+ *   state nor history in any meaningful way.
+ *
+ * Lifecycle transitions (`started`, `paused`, `completed`) are always kept
+ * because they advance resume state and listening history.
+ *
+ * Observation state is updated even for dropped events, so a dropped event
+ * can never starve later ones (e.g. progress after seeking backwards).
+ */
 export function createPlaybackEvent(
   session: PlaybackEventSession,
   input: CreatePlaybackEventInput,
-): PlaybackEvent {
+): PlaybackEvent | null {
   const now = input.now ?? Date.now()
   const listenedMs = session.isListening
     ? Math.min(Math.max(Math.round(now - session.lastEventAt), 0), 86_400_000)
@@ -44,8 +72,20 @@ export function createPlaybackEvent(
   const rawPositionMs = toNonNegativeMilliseconds(input.positionSeconds)
   const positionMs =
     durationMs === undefined ? rawPositionMs : Math.min(rawPositionMs, durationMs)
+  const playbackRate = Number.isFinite(input.playbackRate)
+    ? Math.min(Math.max(input.playbackRate, 0.25), 4)
+    : 1
+
+  const isNoise = isNoiseEvent(
+    session,
+    input.eventType,
+    positionMs,
+    playbackRate,
+  )
 
   session.lastEventAt = now
+  session.lastPositionMs = positionMs
+  session.lastPlaybackRate = playbackRate
 
   if (input.eventType === 'started') {
     session.isListening = true
@@ -56,6 +96,10 @@ export function createPlaybackEvent(
     session.isListening = false
   }
 
+  if (isNoise) {
+    return null
+  }
+
   return {
     eventId: createPlaybackUuid(),
     playbackSessionId: session.id,
@@ -64,11 +108,35 @@ export function createPlaybackEvent(
     ...(durationMs === undefined ? {} : { durationMs }),
     listenedMs,
     occurredAt: new Date(now).toISOString(),
-    playbackRate: Number.isFinite(input.playbackRate)
-      ? Math.min(Math.max(input.playbackRate, 0.25), 4)
-      : 1,
+    playbackRate,
     ...(input.device ? { device: input.device } : {}),
   }
+}
+
+function isNoiseEvent(
+  session: PlaybackEventSession,
+  eventType: PlaybackEventType,
+  positionMs: number,
+  playbackRate: number,
+): boolean {
+  if (session.lastPositionMs === null) {
+    return false
+  }
+
+  if (eventType === 'seeked') {
+    return (
+      Math.abs(positionMs - session.lastPositionMs) < SEEK_NOISE_THRESHOLD_MS
+    )
+  }
+
+  if (eventType === 'progress') {
+    return (
+      positionMs <= session.lastPositionMs &&
+      playbackRate === session.lastPlaybackRate
+    )
+  }
+
+  return false
 }
 
 export function createPlaybackUuid(): string {
