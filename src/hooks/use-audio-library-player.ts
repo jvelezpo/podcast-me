@@ -28,7 +28,8 @@ const CHECKPOINT_INTERVAL_MS = 5_000;
 
 export function useAudioLibraryPlayer(
   updateAudioItem: UpdateAudioItem,
-  isLibraryReady: boolean
+  isLibraryReady: boolean,
+  onFinished?: (finishedItemId: string) => void
 ) {
   // Native focus and route handling own recovery; delayed JS play() can override interruptions.
   const player = useAudioPlayer(null, { updateInterval: 500 });
@@ -45,6 +46,11 @@ export function useAudioLibraryPlayer(
   const lastCheckpoint = useRef<{ itemId: string; savedAt: number } | null>(null);
   const audioModePromise = useRef<Promise<void> | null>(null);
   const playbackRateRef = useRef(1);
+  const onFinishedRef = useRef(onFinished);
+
+  useEffect(() => {
+    onFinishedRef.current = onFinished;
+  }, [onFinished]);
 
   const finishTransition = useCallback(() => {
     transitionInProgress.current = false;
@@ -590,6 +596,7 @@ export function useAudioLibraryPlayer(
       isPlayed: true,
       ...(duration === null ? {} : { durationSeconds: duration }),
     });
+    onFinishedRef.current?.(activeItem.id);
   }, [finishTransition, player, status.didJustFinish, status.duration, updateAudioItem]);
 
   const togglePlayback = useCallback(

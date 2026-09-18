@@ -22,8 +22,13 @@ import { useAuth } from '@/contexts/auth-context'
 import { useTheme } from '@/hooks/use-theme'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
 import type { RemoteAudio } from '@/services/api'
+import { findNextQueueEntry } from '@/services/playback-queue'
 import {
+  downloadRemoteAudioFile,
+  getRemoteAudioDownloadState,
+  isRemoteAudioFileDownloadPending,
   loadCachedRemoteAudios,
+  removeRemoteAudioDownload,
   subscribeToRemoteAudioFileCache,
 } from '@/services/remote-audio-file-cache'
 import { formatPlaybackTime, getAudioItemTitle } from '@/utils/audio-display'
@@ -39,9 +44,16 @@ type RemoteCollection = {
 }
 
 export default function HomeScreen() {
-  const { library, playback, openPlayer, openRemotePlayer, remotePlayback } =
-    useAudioLibraryContext()
-  const { loadRemoteAudios, user } = useAuth()
+  const {
+    library,
+    playback,
+    openPlayer,
+    openRemotePlayer,
+    remotePlayback,
+    playerItem,
+    setAutoAdvanceHandlers,
+  } = useAudioLibraryContext()
+  const { getRemoteAudioStreamSource, loadRemoteAudios, user } = useAuth()
   const media = useMedia()
   const theme = useTheme()
   const networkState = useNetworkState()
@@ -56,6 +68,12 @@ export default function HomeScreen() {
   )
   const [highlightToken, setHighlightToken] = useState(0)
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [downloadingAudioIds, setDownloadingAudioIds] = useState<Set<string>>(
+    () => new Set(),
+  )
+  const [downloadErrors, setDownloadErrors] = useState<Record<string, string>>(
+    {},
+  )
   const [remoteCollection, setRemoteCollection] = useState<RemoteCollection>({
     userId: null,
     audios: [],
@@ -105,6 +123,8 @@ export default function HomeScreen() {
 
     if (!user) {
       remotePlayback.stop()
+      setDownloadingAudioIds(new Set())
+      setDownloadErrors({})
       return () => {
         isMounted = false
       }
@@ -115,11 +135,15 @@ export default function HomeScreen() {
       const cachedAudioIds = new Set(cachedAudios.map((audio) => audio.id))
 
       if (isMounted) {
+        const audios = mergeRemoteAudios([], cachedAudios)
         setRemoteCollection({
           userId: user.id,
-          audios: cachedAudios,
+          audios,
           cachedAudioIds,
         })
+        setDownloadingAudioIds(
+          syncDownloadingIds(user.id, audios, cachedAudioIds),
+        )
       }
 
       if (!isOnline) {
@@ -130,11 +154,15 @@ export default function HomeScreen() {
         const onlineAudios = await loadRemoteAudios()
 
         if (isMounted) {
+          const audios = mergeRemoteAudios(onlineAudios, cachedAudios)
           setRemoteCollection({
             userId: user.id,
-            audios: mergeRemoteAudios(onlineAudios, cachedAudios),
+            audios,
             cachedAudioIds,
           })
+          setDownloadingAudioIds(
+            syncDownloadingIds(user.id, audios, cachedAudioIds),
+          )
         }
       } catch {
         // Keep downloaded audio visible when refreshing the remote library fails.
@@ -172,6 +200,13 @@ export default function HomeScreen() {
         audios: mergeRemoteAudios(onlineAudios, cachedAudios),
         cachedAudioIds: new Set(cachedAudios.map((audio) => audio.id)),
       })
+      setDownloadingAudioIds(
+        syncDownloadingIds(
+          user.id,
+          mergeRemoteAudios(onlineAudios, cachedAudios),
+          new Set(cachedAudios.map((audio) => audio.id)),
+        ),
+      )
     } catch {
       // Keep the current collection when the refresh request fails.
     } finally {
@@ -302,6 +337,137 @@ export default function HomeScreen() {
 
     remotePlayback.togglePlayback(audio)
   }
+
+  const advanceQueue = (finishedKind: 'local' | 'remote', finishedId: string) => {
+    const next = findNextQueueEntry(
+      collectionItems,
+      finishedKind,
+      finishedId,
+      isOnline,
+    )
+
+    if (
+      next &&
+      ((playerItem?.kind === 'local' &&
+        finishedKind === 'local' &&
+        playerItem.item.id === finishedId) ||
+        (playerItem?.kind === 'remote' &&
+          finishedKind === 'remote' &&
+          playerItem.audio.id === finishedId))
+    ) {
+      if (next.kind === 'local') {
+        openPlayer(next.item)
+      } else {
+        openRemotePlayer(next.audio)
+      }
+    }
+
+    if (!next) {
+      return
+    }
+
+    if (next.kind === 'local') {
+      handleToggleLocalPlayback(next.item)
+    } else {
+      void handleToggleRemotePlayback(next.audio)
+    }
+  }
+
+  useEffect(() => {
+    setAutoAdvanceHandlers({
+      onLocalFinished: (finishedItemId) =>
+        advanceQueue('local', finishedItemId),
+      onRemoteFinished: (finishedAudioId) =>
+        advanceQueue('remote', finishedAudioId),
+    })
+
+    return () => setAutoAdvanceHandlers({})
+  })
+
+  const handleDownloadRemoteAudio = useCallback(
+    async (audio: RemoteAudio) => {
+      if (!user) {
+        return
+      }
+
+      if (Platform.OS === 'web') {
+        return
+      }
+
+      if (!isOnline) {
+        setDownloadErrors((previous) => ({
+          ...previous,
+          [audio.id]: 'Connect to the internet to download this audio.',
+        }))
+        return
+      }
+
+      setDownloadErrors((previous) => {
+        if (!(audio.id in previous)) {
+          return previous
+        }
+
+        const next = { ...previous }
+        delete next[audio.id]
+        return next
+      })
+      setDownloadingAudioIds((previous) => new Set(previous).add(audio.id))
+
+      try {
+        const source = await getRemoteAudioStreamSource(audio)
+        await downloadRemoteAudioFile(user.id, audio, source)
+      } catch (error) {
+        setDownloadErrors((previous) => ({
+          ...previous,
+          [audio.id]:
+            error instanceof Error
+              ? error.message
+              : 'The audio download failed. Try again.',
+        }))
+        setDownloadingAudioIds((previous) => {
+          const next = new Set(previous)
+          next.delete(audio.id)
+          return next
+        })
+      }
+    },
+    [getRemoteAudioStreamSource, isOnline, user],
+  )
+
+  const handleRemoveRemoteDownload = useCallback(
+    (audio: RemoteAudio) => {
+      if (!user || Platform.OS === 'web') {
+        return
+      }
+
+      Alert.alert(
+        'Remove download?',
+        `“${audio.title}” will remain in your remote library, but its offline copy will be deleted from this device.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Remove',
+            style: 'destructive',
+            onPress: () => {
+              void (async () => {
+                await removeRemoteAudioDownload(user.id, audio.id)
+                setDownloadErrors((previous) => {
+                  if (!(audio.id in previous)) {
+                    return previous
+                  }
+
+                  const next = { ...previous }
+                  delete next[audio.id]
+                  return next
+                })
+              })()
+            },
+          },
+        ],
+      )
+    },
+    [user],
+  )
 
   return (
     <ThemedView flex={1}>
@@ -515,10 +681,17 @@ export default function HomeScreen() {
           }}
           renderItem={({ item }) => {
             if (item.kind === 'remote') {
+              const isDownloading = downloadingAudioIds.has(item.audio.id)
               return (
                 <RemoteAudioRow
                   audio={item.audio}
                   isCached={item.isCached}
+                  downloadState={getRemoteAudioDownloadState(
+                    item.isCached,
+                    isDownloading,
+                  )}
+                  canDownload={Platform.OS !== 'web' && user !== null}
+                  downloadError={downloadErrors[item.audio.id] ?? null}
                   isActive={remotePlayback.activeAudioId === item.audio.id}
                   isPlaying={remotePlayback.isPlaying}
                   isTransitioning={remotePlayback.isTransitioning}
@@ -531,6 +704,8 @@ export default function HomeScreen() {
                   onTogglePlayback={(audio) =>
                     void handleToggleRemotePlayback(audio)
                   }
+                  onDownload={(audio) => void handleDownloadRemoteAudio(audio)}
+                  onRemoveDownload={handleRemoveRemoteDownload}
                 />
               )
             }
@@ -583,6 +758,22 @@ function mergeRemoteAudios(
     ...onlineAudios,
     ...cachedAudios.filter((audio) => !onlineIds.has(audio.id)),
   ]
+}
+
+function syncDownloadingIds(
+  userId: string,
+  audios: RemoteAudio[],
+  cachedAudioIds: Set<string>,
+): Set<string> {
+  const next = new Set<string>()
+
+  for (const audio of audios) {
+    if (!cachedAudioIds.has(audio.id) && isRemoteAudioFileDownloadPending(userId, audio.id)) {
+      next.add(audio.id)
+    }
+  }
+
+  return next
 }
 
 function findNextPlayableItem(

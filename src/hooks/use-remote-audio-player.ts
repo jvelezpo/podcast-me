@@ -56,6 +56,7 @@ export function useRemoteAudioPlayer(
   recordPlayback: RecordPlayback,
   getPlaybackProgress: GetPlaybackProgress,
   sendPlaybackEvent: SendPlaybackEvent,
+  onFinished?: (finishedAudioId: string) => void,
 ) {
   const player = useAudioPlayer(null, { updateInterval: 500 })
   const status = useAudioPlayerStatus(player)
@@ -76,6 +77,7 @@ export function useRemoteAudioPlayer(
   const playbackEventSessionRef = useRef<PlaybackEventSession | null>(null)
   const playbackEventSendTailRef = useRef<Promise<void>>(Promise.resolve())
   const sendPlaybackEventRef = useRef(sendPlaybackEvent)
+  const onFinishedRef = useRef(onFinished)
   const lastCheckpointRef = useRef<{ audioId: string; savedAt: number } | null>(
     null,
   )
@@ -83,6 +85,10 @@ export function useRemoteAudioPlayer(
   useEffect(() => {
     sendPlaybackEventRef.current = sendPlaybackEvent
   }, [sendPlaybackEvent])
+
+  useEffect(() => {
+    onFinishedRef.current = onFinished
+  }, [onFinished])
 
   const queuePlaybackEvent = useCallback(
     (
@@ -612,6 +618,10 @@ export function useRemoteAudioPlayer(
       shouldTrackRemoteAudioPosition(finishedAudio.metadata)
     ) {
       void saveRemoteAudioPosition(finishedAudio.id, 0)
+    }
+
+    if (finishedAudio) {
+      onFinishedRef.current?.(finishedAudio.id)
     }
   }, [status.didJustFinish, stop])
 

@@ -88,10 +88,7 @@ type AudioPage = {
 export class ApiError extends Error {
   public readonly status?: number
 
-  constructor(
-    message: string,
-    status?: number,
-  ) {
+  constructor(message: string, status?: number) {
     super(message)
     this.status = status
   }
@@ -156,6 +153,42 @@ export function getRemoteAudioStreamUrl(streamUrl: string): string {
   }
 }
 
+/**
+ * Builds the playback/download source for a remote audio.
+ *
+ * Audio bytes must NOT be proxied through Vercel: Vercel bills every
+ * response byte as egress even when the backend fetched them from R2.
+ * The backend therefore serves presigned R2 URLs (absolute, cross-origin)
+ * that the client streams directly from Cloudflare.
+ *
+ * Such URLs already carry their authorization in the query string, so the
+ * app's Bearer token is only attached when the URL points back at the API
+ * origin (the legacy same-origin proxy route). Sending an `Authorization`
+ * header to R2 alongside SigV4 query-string auth can make the request
+ * fail, so cross-origin URLs always get clean headers.
+ */
+export function buildRemoteAudioStreamSource(
+  streamUrl: string,
+  accessToken: string,
+): RemoteAudioStreamSource {
+  const uri = getRemoteAudioStreamUrl(streamUrl)
+
+  return {
+    uri,
+    headers: isApiOriginUrl(uri)
+      ? { Authorization: `Bearer ${accessToken}` }
+      : {},
+  }
+}
+
+function isApiOriginUrl(uri: string): boolean {
+  try {
+    return new URL(uri).origin === new URL(getApiOrigin()).origin
+  } catch {
+    return false
+  }
+}
+
 export function refreshSession(refreshToken: string): Promise<Session> {
   return request('/auth/refresh', {
     method: 'POST',
@@ -178,7 +211,11 @@ export async function revokeSessionWithRefreshToken(
 
 async function request<T>(
   path: string,
-  options: { method?: 'POST' | 'PUT'; body?: string; accessToken?: string } = {},
+  options: {
+    method?: 'POST' | 'PUT'
+    body?: string
+    accessToken?: string
+  } = {},
 ): Promise<T> {
   const response = await fetch(`${getApiOrigin()}/api/v1${path}`, {
     method: options.method ?? 'GET',
@@ -214,7 +251,8 @@ async function request<T>(
 }
 
 function getApiOrigin(): string {
-  const apiOrigin = process.env.EXPO_PUBLIC_API_ORIGIN
+  // const apiOrigin = process.env.EXPO_PUBLIC_API_ORIGIN
+  const apiOrigin = 'http://192.168.40.172:3000'
 
   if (typeof apiOrigin !== 'string' || !apiOrigin) {
     throw new ApiError('Sign-in is not configured for this app build.')

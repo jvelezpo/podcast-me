@@ -1,7 +1,7 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
 import { Image } from 'expo-image'
 import { useEffect, useState } from 'react'
-import { View, XStack, YStack } from 'tamagui'
+import { Spinner, View, XStack, YStack } from 'tamagui'
 
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
@@ -9,28 +9,39 @@ import { AppButton } from '@/components/ui/app-button'
 import { Radius, Spacing } from '@/constants/theme'
 import { useTheme } from '@/hooks/use-theme'
 import type { RemoteAudio } from '@/services/api'
+import type { RemoteAudioDownloadState } from '@/services/remote-audio-file-cache'
 import { formatPlaybackTime } from '@/utils/audio-display'
 
 type RemoteAudioRowProps = {
   audio: RemoteAudio
   isCached: boolean
+  downloadState: RemoteAudioDownloadState
+  canDownload: boolean
+  downloadError: string | null
   isActive: boolean
   isPlaying: boolean
   isTransitioning: boolean
   playbackError: string | null
   onOpenPlayer: (audio: RemoteAudio) => void
   onTogglePlayback: (audio: RemoteAudio) => void
+  onDownload: (audio: RemoteAudio) => void
+  onRemoveDownload: (audio: RemoteAudio) => void
 }
 
 export function RemoteAudioRow({
   audio,
   isCached,
+  downloadState,
+  canDownload,
+  downloadError,
   isActive,
   isPlaying,
   isTransitioning,
   playbackError,
   onOpenPlayer,
   onTogglePlayback,
+  onDownload,
+  onRemoveDownload,
 }: RemoteAudioRowProps) {
   const theme = useTheme()
   const metadata = getRemoteAudioMetadata(audio.metadata)
@@ -109,24 +120,23 @@ export function RemoteAudioRow({
               </ThemedText>
             ) : null}
             <XStack alignItems="center" gap={Spacing.one} marginTop={Spacing.half}>
-              {isCached ? (
-                <SymbolView
-                  name={CACHED_ICON}
-                  size={16}
-                  tintColor={theme.accent}
-                />
-              ) : (
-                <View
-                  width={7}
-                  height={7}
-                  borderRadius={7}
-                  backgroundColor="$accent"
-                />
-              )}
+              <SymbolView
+                name={
+                  downloadState === 'downloaded'
+                    ? CACHED_ICON
+                    : downloadState === 'downloading'
+                      ? DOWNLOADING_ICON
+                      : REMOTE_AVAILABILITY_ICON
+                }
+                size={16}
+                tintColor={theme.accent}
+              />
               <ThemedText type="metadata" color="$accent">
-                {isCached
-                  ? 'Cached · Available offline'
-                  : `Remote · ${sourceType}`}
+                {downloadState === 'downloaded'
+                  ? 'Downloaded · Available offline'
+                  : downloadState === 'downloading'
+                    ? 'Downloading…'
+                    : `Remote · ${sourceType} · Available for download`}
               </ThemedText>
               {metadata.durationMs !== null ? (
                 <ThemedText type="metadata" themeColor="textSecondary">
@@ -139,8 +149,53 @@ export function RemoteAudioRow({
                 {playbackError}
               </ThemedText>
             ) : null}
+            {downloadError ? (
+              <ThemedText type="metadata" color="$danger">
+                {downloadError}
+              </ThemedText>
+            ) : null}
           </YStack>
         </AppButton>
+        {canDownload ? (
+          <YStack gap={Spacing.one} alignItems="center">
+            <AppButton
+              tone="icon"
+              accessibilityLabel={
+                downloadState === 'downloaded'
+                  ? `Remove download for ${audio.title}`
+                  : downloadState === 'downloading'
+                    ? `Downloading ${audio.title}`
+                    : `Download ${audio.title} for offline playback`
+              }
+              accessibilityState={{
+                busy: downloadState === 'downloading',
+                disabled: downloadState === 'downloading',
+              }}
+              disabled={downloadState === 'downloading'}
+              onPress={() =>
+                downloadState === 'downloaded'
+                  ? onRemoveDownload(audio)
+                  : onDownload(audio)
+              }
+              backgroundColor="$backgroundSelected"
+            >
+              {downloadState === 'downloading' ? (
+                <Spinner size="small" color="$accent" />
+              ) : (
+                <SymbolView
+                  name={
+                    downloadState === 'downloaded'
+                      ? DOWNLOADED_ICON
+                      : DOWNLOAD_ICON
+                  }
+                  size={20}
+                  tintColor={theme.accent}
+                  weight="bold"
+                />
+              )}
+            </AppButton>
+          </YStack>
+        ) : null}
         <AppButton
           tone="icon"
           accessibilityLabel={`${isTransitioning ? 'Loading' : isActive && isPlaying ? 'Pause' : playbackError ? 'Retry' : 'Play'} ${audio.title}`}
@@ -167,9 +222,29 @@ const REMOTE_ICON: SymbolViewProps['name'] = {
   web: 'cloud',
 }
 const CACHED_ICON: SymbolViewProps['name'] = {
-  ios: 'icloud.and.arrow.down.fill',
-  android: 'cloud_done',
-  web: 'cloud_done',
+  ios: 'checkmark.icloud.fill',
+  android: 'offline_pin',
+  web: 'offline_pin',
+}
+const DOWNLOADED_ICON: SymbolViewProps['name'] = {
+  ios: 'trash',
+  android: 'delete',
+  web: 'delete',
+}
+const DOWNLOAD_ICON: SymbolViewProps['name'] = {
+  ios: 'arrow.down.circle',
+  android: 'download_for_offline',
+  web: 'download_for_offline',
+}
+const DOWNLOADING_ICON: SymbolViewProps['name'] = {
+  ios: 'arrow.down.circle.fill',
+  android: 'downloading',
+  web: 'downloading',
+}
+const REMOTE_AVAILABILITY_ICON: SymbolViewProps['name'] = {
+  ios: 'cloud',
+  android: 'cloud_queue',
+  web: 'cloud_queue',
 }
 const PLAY_ICON: SymbolViewProps['name'] = {
   ios: 'play.fill',

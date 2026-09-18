@@ -110,6 +110,122 @@ export function subscribeToRemoteAudioFileCache(
   return () => listeners.delete(listener)
 }
 
+export type RemoteAudioDownloadState =
+  | 'downloaded'
+  | 'downloading'
+  | 'available'
+
+export function isRemoteAudioFileDownloadPending(
+  userId: string,
+  audioId: string,
+): boolean {
+  if (Platform.OS === 'web') {
+    return false
+  }
+
+  return pendingDownloads.has(getPendingKey(userId, audioId))
+}
+
+export function getRemoteAudioDownloadState(
+  isCached: boolean,
+  isDownloading: boolean,
+): RemoteAudioDownloadState {
+  if (isCached) {
+    return 'downloaded'
+  }
+
+  return isDownloading ? 'downloading' : 'available'
+}
+
+export async function downloadRemoteAudioFile(
+  userId: string,
+  audio: RemoteAudio,
+  source: RemoteAudioStreamSource,
+): Promise<'downloaded' | 'already-cached' | 'already-downloading'> {
+  if (Platform.OS === 'web') {
+    throw new Error('Downloads are not supported on web.')
+  }
+
+  const pendingKey = getPendingKey(userId, audio.id)
+
+  if (pendingDownloads.has(pendingKey)) {
+    return 'already-downloading'
+  }
+
+  const cachedSource = await getCachedRemoteAudioSource(userId, audio.id).catch(
+    () => null,
+  )
+
+  if (cachedSource) {
+    await withCacheIndex(userId, (entries) => ({
+      entries: entries.map((entry) =>
+        entry.audio.id === audio.id ? { ...entry, audio } : entry,
+      ),
+      result: undefined,
+    })).catch(() => undefined)
+    return 'already-cached'
+  }
+
+  if (!source.uri) {
+    throw new Error('This remote audio has no downloadable address.')
+  }
+
+  if (isLocalSource(source.uri)) {
+    return 'already-cached'
+  }
+
+  startDownload(userId, audio, source, Date.now())
+  const pending = pendingDownloads.get(pendingKey)
+
+  if (!pending) {
+    throw new Error('The audio download could not be started.')
+  }
+
+  await pending.promise
+  const stored = await getCachedRemoteAudioSource(userId, audio.id).catch(
+    () => null,
+  )
+
+  if (!stored) {
+    throw new Error(
+      'The audio download failed. Check your connection and try again.',
+    )
+  }
+
+  return 'downloaded'
+}
+
+export async function removeRemoteAudioDownload(
+  userId: string,
+  audioId: string,
+): Promise<void> {
+  if (Platform.OS === 'web') {
+    return
+  }
+
+  const pending = pendingDownloads.get(getPendingKey(userId, audioId))
+
+  if (pending) {
+    pending.abortController.abort()
+    await pending.promise.catch(() => undefined)
+  }
+
+  await withCacheIndex(userId, (entries) => {
+    const entry = entries.find((candidate) => candidate.audio.id === audioId)
+
+    if (entry) {
+      deleteFileIfPresent(getCacheFile(userId, entry.fileName))
+    }
+
+    return {
+      entries: entries.filter((candidate) => candidate.audio.id !== audioId),
+      result: undefined,
+    }
+  }).catch(() => undefined)
+
+  notifyListeners(userId)
+}
+
 export async function clearRemoteAudioFileCache(userId: string): Promise<void> {
   if (Platform.OS === 'web') {
     return
@@ -159,6 +275,7 @@ function startDownload(
     }
   })
   pendingDownloads.set(pendingKey, pending)
+  notifyListeners(userId)
 }
 
 async function downloadAndStore(

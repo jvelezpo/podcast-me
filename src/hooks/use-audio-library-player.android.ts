@@ -40,6 +40,7 @@ const INITIAL_STATE: AndroidAutoPlaybackState = {
 export function useAudioLibraryPlayer(
   updateAudioItem: UpdateAudioItem,
   isLibraryReady: boolean,
+  onFinished?: (finishedItemId: string) => void,
 ) {
   const [status, setStatus] = useState(INITIAL_STATE);
   const [isTransitioning, setIsTransitioning] = useState(false);
@@ -52,6 +53,11 @@ export function useAudioLibraryPlayer(
     null,
   );
   const completedItemId = useRef<string | null>(null);
+  const onFinishedRef = useRef(onFinished);
+
+  useEffect(() => {
+    onFinishedRef.current = onFinished;
+  }, [onFinished]);
 
   const applyPlaybackState = useCallback(
     (nextState: AndroidAutoPlaybackState) => {
@@ -180,6 +186,7 @@ export function useAudioLibraryPlayer(
 
     completedItemId.current = itemId;
     void persistState(itemId, true);
+    onFinishedRef.current?.(itemId);
   }, [persistState, status.isEnded, status.mediaId]);
 
   useEffect(() => {

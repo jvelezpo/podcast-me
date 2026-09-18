@@ -12,9 +12,9 @@ import { Platform } from 'react-native'
 import {
   ApiError,
   type AuthUser,
+  buildRemoteAudioStreamSource,
   getProfile,
   getPlaybackProgress,
-  getRemoteAudioStreamUrl,
   listRemoteAudios,
   type PlaybackEvent,
   type PlaybackProgress,
@@ -267,10 +267,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
           setSession(activeSession)
         }
 
-        return {
-          uri: getRemoteAudioStreamUrl(audio.streamUrl),
-          headers: { Authorization: `Bearer ${activeSession.accessToken}` },
-        }
+        return buildRemoteAudioStreamSource(
+          audio.streamUrl,
+          activeSession.accessToken,
+        )
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           clearRemoteAudioCache(session.user.id)
@@ -420,19 +420,20 @@ function syncRemoteLibraryForAndroidAuto(
   return Promise.all(
     audios.map(async (audio) => {
       const source = await getCachedRemoteAudioSource(userId, audio.id)
+      const networkSource =
+        source ?? buildRemoteAudioStreamSource(audio.streamUrl, accessToken)
 
       return {
         id: `remote:${audio.id}`,
         originalName: audio.title,
-        localUri: source?.uri ?? getRemoteAudioStreamUrl(audio.streamUrl),
+        localUri: networkSource.uri,
         mimeType: null,
         durationSeconds: getRemoteDurationSeconds(audio.metadata),
         lastPositionSeconds: 0,
         isPlayed: false,
         metadata: { coverArtUrl: getRemoteCoverArtUrl(audio.metadata) },
         updatedAt: audio.createdAt,
-        requestHeaders:
-          source?.headers ?? { Authorization: `Bearer ${accessToken}` },
+        requestHeaders: networkSource.headers,
       }
     }),
   )

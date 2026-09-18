@@ -3,6 +3,7 @@ import {
   type PropsWithChildren,
   useCallback,
   useContext,
+  useRef,
   useState,
 } from 'react'
 
@@ -17,6 +18,11 @@ type PlayerItem =
   | { kind: 'local'; item: LoadedAudioItem }
   | { kind: 'remote'; audio: RemoteAudio }
 
+export type AutoAdvanceHandlers = {
+  onLocalFinished?: (finishedItemId: string) => void
+  onRemoteFinished?: (finishedAudioId: string) => void
+}
+
 type AudioLibraryContextValue = {
   library: ReturnType<typeof useAudioLibrary>
   playback: ReturnType<typeof useAudioLibraryPlayer>
@@ -26,6 +32,7 @@ type AudioLibraryContextValue = {
   openPlayer: (item: LoadedAudioItem) => void
   openRemotePlayer: (audio: RemoteAudio) => void
   closePlayer: () => void
+  setAutoAdvanceHandlers: (handlers: AutoAdvanceHandlers) => void
 }
 
 const AudioLibraryContext = createContext<AudioLibraryContextValue | null>(null)
@@ -38,15 +45,30 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
     sendRemotePlaybackEvent,
   } = useAuth()
   const library = useAudioLibrary()
+  const autoAdvanceRef = useRef<AutoAdvanceHandlers>({})
+  const setAutoAdvanceHandlers = useCallback(
+    (handlers: AutoAdvanceHandlers) => {
+      autoAdvanceRef.current = handlers
+    },
+    [],
+  )
+  const handleLocalFinished = useCallback((finishedItemId: string) => {
+    autoAdvanceRef.current.onLocalFinished?.(finishedItemId)
+  }, [])
+  const handleRemoteFinished = useCallback((finishedAudioId: string) => {
+    autoAdvanceRef.current.onRemoteFinished?.(finishedAudioId)
+  }, [])
   const playback = useAudioLibraryPlayer(
     library.updateAudioItem,
     !library.isLoading,
+    handleLocalFinished,
   )
   const remotePlayback = useRemoteAudioPlayer(
     getRemoteAudioStreamSource,
     recordRemoteAudioPlayback,
     getRemotePlaybackProgress,
     sendRemotePlaybackEvent,
+    handleRemoteFinished,
   )
   const [isPlayerOpen, setIsPlayerOpen] = useState(false)
   const [playerItem, setPlayerItem] = useState<PlayerItem | null>(null)
@@ -74,6 +96,7 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
         openPlayer,
         openRemotePlayer,
         closePlayer,
+        setAutoAdvanceHandlers,
       }}
     >
       {children}
