@@ -1,5 +1,6 @@
+import { useNetworkState } from 'expo-network'
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
-import { useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -8,7 +9,7 @@ import {
   TextInput,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { ScrollView, View, XStack, YStack, useMedia } from 'tamagui'
+import { ScrollView, Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
@@ -20,24 +21,38 @@ import {
   Radius,
   Spacing,
 } from '@/constants/theme'
-import { useAudioLibraryContext } from '@/contexts/audio-library-context'
+import { useLibraryData, usePlaybackState } from '@/contexts/audio-library-context'
 import { useAuth } from '@/contexts/auth-context'
 import {
   type ThemePreference,
   useThemePreference,
 } from '@/contexts/theme-preference-context'
 import { useTheme } from '@/hooks/use-theme'
-import { formatPlaybackTime } from '@/utils/audio-display'
+import {
+  clearRemoteAudioFileCache,
+  loadCachedRemoteAudios,
+  subscribeToRemoteAudioFileCache,
+} from '@/services/remote-audio-file-cache'
+import {
+  formatFileSize,
+  formatPlaybackTime,
+  getAudioItemTitle,
+} from '@/utils/audio-display'
 import { version } from '../../package.json'
 
 export default function ProfileScreen() {
-  const { library, playback } = useAudioLibraryContext()
+  const { library } = useLibraryData()
+  const { playback } = usePlaybackState()
   const { preference, setPreference } = useThemePreference()
   const media = useMedia()
   const theme = useTheme()
-  const listenedSeconds = library.items.reduce(
-    (total, item) => total + item.lastPositionSeconds,
-    0,
+  const listenedSeconds = useMemo(
+    () =>
+      library.items.reduce(
+        (total, item) => total + item.lastPositionSeconds,
+        0,
+      ),
+    [library.items],
   )
   const hasPlayer = playback.activeItemId !== null
 
@@ -79,6 +94,8 @@ export default function ProfileScreen() {
               collection.
             </ThemedText>
           </YStack>
+
+          <OfflineBanner />
 
           <AccountCard />
 
@@ -163,12 +180,7 @@ export default function ProfileScreen() {
               tintColor={theme.success}
             />
             <SettingsDivider />
-            <SettingsRow
-              icon={OFFLINE_ICON}
-              title="Available offline"
-              description={`${library.items.filter((item) => item.isAvailable).length} files ready without a connection.`}
-              tintColor={theme.success}
-            />
+            <DownloadManager />
           </SectionCard>
           <ThemedText
             type="metadata"
@@ -353,7 +365,6 @@ function AccountCard() {
         </ThemedText>
       ) : null}
       <AppButton
-        className="bg-cyan-500"
         disabled={
           isSubmitting || !email.trim() || (codeRequested && code.length !== 6)
         }
@@ -372,6 +383,246 @@ function AccountCard() {
     </SectionCard>
   )
 }
+
+function OfflineBanner() {
+  const networkState = useNetworkState()
+  const isOffline =
+    networkState.isConnected === false ||
+    networkState.isInternetReachable === false
+
+  if (!isOffline) {
+    return null
+  }
+
+  return (
+    <ThemedView
+      accessibilityLiveRegion="polite"
+      accessibilityRole="alert"
+      flexDirection="row"
+      alignItems="center"
+      gap={Spacing.two}
+      paddingHorizontal={Spacing.three}
+      paddingVertical={Spacing.two}
+      borderWidth={1}
+      borderColor="$danger"
+      borderRadius={Radius.medium}
+      backgroundColor="$backgroundElement"
+    >
+      <View width={8} height={8} borderRadius={8} backgroundColor="$danger" />
+      <YStack flex={1} gap={2}>
+        <ThemedText type="smallBold" color="$danger">
+          No internet connection
+        </ThemedText>
+        <ThemedText type="metadata" themeColor="textSecondary">
+          Downloads pause while offline — cached audio stays playable.
+        </ThemedText>
+      </YStack>
+    </ThemedView>
+  )
+}
+
+/**
+ * Download manager: per-item sizes plus an
+ * `X files • Y MB cached • Clear` summary. Local imports are always
+ * on-device; the Clear button empties the remote-audio file cache so cloud
+ * streams can be reclaimed without touching local files.
+ *
+ * Memoized with zero props (§P2): the parent Profile screen re-renders on
+ * playback ticks, but this section only depends on stable `library.items`
+ * identity + its own cache state, so it bails out during playback.
+ */
+const DownloadManager = memo(function DownloadManager() {
+  const { library } = useLibraryData()
+  const { user } = useAuth()
+  const theme = useTheme()
+  const networkState = useNetworkState()
+  const [cachedRemoteCount, setCachedRemoteCount] = useState(0)
+  const [isClearing, setIsClearing] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const isOffline =
+    networkState.isConnected === false ||
+    networkState.isInternetReachable === false
+
+  useEffect(() => {
+    let isMounted = true
+
+    const refresh = async () => {
+      if (!user || Platform.OS === 'web') {
+        if (isMounted) setCachedRemoteCount(0)
+        return
+      }
+
+      try {
+        const cached = await loadCachedRemoteAudios(user.id)
+        if (isMounted) setCachedRemoteCount(cached.length)
+      } catch {
+        if (isMounted) setCachedRemoteCount(0)
+      }
+    }
+
+    void refresh()
+    const unsubscribe = subscribeToRemoteAudioFileCache((changedUserId) => {
+      if (changedUserId === user?.id) void refresh()
+    })
+
+    return () => {
+      isMounted = false
+      unsubscribe()
+    }
+  }, [user])
+
+  const availableLocal = useMemo(
+    () => library.items.filter((item) => item.isAvailable),
+    [library.items],
+  )
+  const totalBytes = useMemo(
+    () =>
+      library.items.reduce((total, item) => total + (item.sizeBytes ?? 0), 0),
+    [library.items],
+  )
+  const totalMb =
+    totalBytes > 0 ? `${(totalBytes / (1024 * 1024)).toFixed(1)} MB` : '0 MB'
+  const totalFiles = availableLocal.length + cachedRemoteCount
+  // Sorted once per membership change (§P2): `library.items` identity is now
+  // stable across position checkpoints, so this memo hits during playback.
+  const sortedBySize = useMemo(
+    () =>
+      [...library.items].sort(
+        (first, second) => (second.sizeBytes ?? 0) - (first.sizeBytes ?? 0),
+      ),
+    [library.items],
+  )
+
+  const handleClear = () => {
+    if (!user || isClearing || Platform.OS === 'web') return
+    setIsClearing(true)
+    setNotice(null)
+    void clearRemoteAudioFileCache(user.id)
+      .then(() => {
+        setCachedRemoteCount(0)
+        setNotice('Cloud cache cleared. Local files are untouched.')
+      })
+      .catch(() => setNotice('Could not clear the cloud cache. Try again.'))
+      .finally(() => setIsClearing(false))
+  }
+
+  return (
+    <YStack gap={Spacing.two}>
+      <XStack alignItems="center" gap={Spacing.two}>
+        <View
+          width={42}
+          height={42}
+          flexShrink={0}
+          alignItems="center"
+          justifyContent="center"
+          borderRadius={14}
+          backgroundColor="$backgroundSelected"
+        >
+          <SymbolView
+            name={OFFLINE_ICON}
+            size={21}
+            tintColor={theme.success}
+          />
+        </View>
+        <YStack flex={1} gap={Spacing.half}>
+          <ThemedText type="smallBold">Available offline</ThemedText>
+          <ThemedText
+            type="metadata"
+            themeColor="textSecondary"
+            accessibilityLabel={`${totalFiles} files, ${totalMb} cached`}
+          >
+            {`${totalFiles} files • ${totalMb} cached`}
+            {isOffline ? ' • Offline — downloads paused' : ''}
+          </ThemedText>
+        </YStack>
+        {Platform.OS !== 'web' && user && (
+          <AppButton
+            tone="outlined"
+            accessibilityLabel="Clear cloud cache"
+            accessibilityHint="Removes downloaded cloud copies without touching local files"
+            accessibilityState={{ busy: isClearing }}
+            disabled={isClearing || cachedRemoteCount === 0}
+            onPress={handleClear}
+            minHeight={44}
+          >
+            {isClearing ? (
+              <Spinner size="small" color="$accent" />
+            ) : (
+              <ThemedText type="smallBold">Clear</ThemedText>
+            )}
+          </AppButton>
+        )}
+      </XStack>
+      {notice && (
+        <ThemedText
+          accessibilityLiveRegion="polite"
+          type="metadata"
+          themeColor="textSecondary"
+        >
+          {notice}
+        </ThemedText>
+      )}
+      {library.isLoading ? (
+        <XStack alignItems="center" gap={Spacing.two}>
+          <Spinner size="small" color="$accent" />
+          <ThemedText type="small" themeColor="textSecondary">
+            Measuring downloads…
+          </ThemedText>
+        </XStack>
+      ) : sortedBySize.length === 0 ? (
+        <ThemedText type="metadata" themeColor="textSecondary">
+          No downloads yet. Import audio from Library to listen offline.
+        </ThemedText>
+      ) : (
+        <YStack gap={Spacing.one}>
+          {sortedBySize.slice(0, 20).map((item) => (
+            <XStack
+              key={item.id}
+              alignItems="center"
+              gap={Spacing.two}
+              paddingVertical={Spacing.one}
+            >
+              <YStack flex={1} minWidth={0}>
+                <ThemedText type="smallBold" numberOfLines={1}>
+                  {getAudioItemTitle(item)}
+                </ThemedText>
+                <ThemedText
+                  type="metadata"
+                  themeColor="textSecondary"
+                  numberOfLines={1}
+                >
+                  {formatPlaybackTime(item.durationSeconds)}
+                  {' · '}
+                  {formatFileSize(item.sizeBytes)}
+                  {item.isAvailable ? '' : ' · Missing file'}
+                </ThemedText>
+              </YStack>
+              <ThemedText
+                type="metadata"
+                themeColor="textSecondary"
+                flexShrink={0}
+              >
+                {formatFileSize(item.sizeBytes)}
+              </ThemedText>
+            </XStack>
+          ))}
+          {sortedBySize.length > 20 && (
+            <ThemedText type="metadata" themeColor="textSecondary">
+              Showing the 20 largest of {sortedBySize.length} files.
+            </ThemedText>
+          )}
+          {cachedRemoteCount > 0 && (
+            <ThemedText type="metadata" themeColor="textSecondary">
+              Plus {cachedRemoteCount} cloud{' '}
+              {cachedRemoteCount === 1 ? 'download' : 'downloads'} cached for
+              offline playback.
+            </ThemedText>
+          )}
+        </YStack>
+      )}
+    </YStack>
+  )
+})
 
 type StatCardProps = {
   icon: SymbolViewProps['name']

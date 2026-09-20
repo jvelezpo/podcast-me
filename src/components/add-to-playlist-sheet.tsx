@@ -10,6 +10,7 @@ import { AppButton } from '@/components/ui/app-button'
 import { Radius, Spacing } from '@/constants/theme'
 import { useAudioLibraryContext } from '@/contexts/audio-library-context'
 import { useTheme } from '@/hooks/use-theme'
+import { selection, success } from '@/services/haptics'
 import type { PlaylistAudioRef } from '@/models/playlist'
 
 type AddToPlaylistSheetProps = {
@@ -30,10 +31,12 @@ export function AddToPlaylistSheet({ audioRef, audioTitle, onClose, onAdded }: A
   const handleAdd = async (playlistId: string, playlistName: string) => {
     setPendingPlaylistId(playlistId)
     setError(null)
+    selection()
     const outcome = await playlists.addToPlaylist(playlistId, audioRef)
     setPendingPlaylistId(null)
 
     if (outcome === 'added') {
+      success()
       onAdded(playlistName)
       onClose()
     } else if (outcome === 'duplicate') {

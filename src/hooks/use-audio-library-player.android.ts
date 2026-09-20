@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 
-import type { AudioItemPlaybackUpdate } from "@/hooks/use-audio-library";
+import type {
+  AudioItemPlaybackUpdate,
+  AudioItemUpdateOptions,
+} from "@/hooks/use-audio-library";
 import type { LoadedAudioItem } from "@/services/audio-library-storage";
+import { parseRemoteMediaId } from "@/services/android-auto-remote-sync";
 import {
   dismissAndroidAutoPlayback,
   getAndroidAutoPlaybackState,
@@ -11,6 +15,7 @@ import {
   playAndroidAutoItem,
   seekAndroidAutoPlayback,
   setAndroidAutoPlaybackRate,
+  setAndroidAutoVolume,
   type AndroidAutoPlaybackState,
 } from "../../modules/android-auto";
 
@@ -22,9 +27,16 @@ export type AudioPlaybackError = {
 type UpdateAudioItem = (
   itemId: string,
   update: AudioItemPlaybackUpdate,
+  options?: AudioItemUpdateOptions,
 ) => Promise<boolean>;
 
 const CHECKPOINT_INTERVAL_MS = 5_000;
+/**
+ * Service pushes state every 500 ms while playing. Position-only ticks must
+ * not re-render JS: skip `setState` when the push carries no meaningful
+ * change (same mediaId/isPlaying/error/rate/loaded/ended and <1 s move).
+ */
+const POSITION_DEDUP_TOLERANCE_SECONDS = 1;
 const INITIAL_STATE: AndroidAutoPlaybackState = {
   serviceReady: false,
   mediaId: null,
@@ -61,7 +73,16 @@ export function useAudioLibraryPlayer(
 
   const applyPlaybackState = useCallback(
     (nextState: AndroidAutoPlaybackState) => {
+      const previous = statusRef.current;
       statusRef.current = nextState;
+
+      // Dedup 500 ms position ticks: the ref stays fresh for persist
+      // reads, but React state (and every context consumer) only updates
+      // on meaningful changes.
+      if (isPlaybackStateEquivalent(previous, nextState)) {
+        return;
+      }
+
       setStatus(nextState);
       setIsTransitioning(false);
 
@@ -134,19 +155,29 @@ export function useAudioLibraryPlayer(
   );
 
   const persistState = useCallback(
-    async (itemId: string, markPlayed = false) => {
+    async (
+      itemId: string,
+      markPlayed = false,
+      options?: AudioItemUpdateOptions,
+    ) => {
       const current = statusRef.current;
-      if (current.mediaId !== itemId) {
+      // Remote (`remote:<id>`) media is owned by the remote hook; persisting
+      // it as a library item would write progress against a phantom id.
+      if (current.mediaId !== itemId || parseRemoteMediaId(itemId) !== null) {
         return;
       }
 
-      await updateAudioItem(itemId, {
-        lastPositionSeconds: markPlayed ? 0 : current.currentPositionSeconds,
-        ...(current.durationSeconds === null
-          ? {}
-          : { durationSeconds: current.durationSeconds }),
-        ...(markPlayed ? { isPlayed: true } : {}),
-      });
+      await updateAudioItem(
+        itemId,
+        {
+          lastPositionSeconds: markPlayed ? 0 : current.currentPositionSeconds,
+          ...(current.durationSeconds === null
+            ? {}
+            : { durationSeconds: current.durationSeconds }),
+          ...(markPlayed ? { isPlayed: true } : {}),
+        },
+        options,
+      );
     },
     [updateAudioItem],
   );
@@ -193,16 +224,19 @@ export function useAudioLibraryPlayer(
     const subscription = AppState.addEventListener("change", (nextState) => {
       const itemId = statusRef.current.mediaId;
       if ((nextState === "inactive" || nextState === "background") && itemId) {
-        void persistState(itemId);
+        void persistState(itemId, false, { forcePersist: true });
       }
     });
 
     return () => subscription.remove();
   }, [persistState]);
 
+  const lastItemRef = useRef<LoadedAudioItem | null>(null);
+
   const loadAndPlay = useCallback(
     async (item: LoadedAudioItem) => {
       const requestId = beginTransition();
+      lastItemRef.current = item;
       try {
         const didPlay = await playAndroidAutoItem(
           item.id,
@@ -229,6 +263,25 @@ export function useAudioLibraryPlayer(
     [beginTransition, failPlayback, finishTransition],
   );
 
+  /**
+   * Stall retry: a fresh load for the current local item through the same
+   * path toggle-playback uses. The generic hook owns this method on other
+   * platforms; without it the stall Retry button crashes on Android.
+   */
+  const retryPlayback = useCallback((): void => {
+    const item = lastItemRef.current;
+
+    if (
+      !item ||
+      statusRef.current.mediaId !== item.id ||
+      parseRemoteMediaId(item.id) !== null
+    ) {
+      return;
+    }
+
+    void loadAndPlay(item);
+  }, [loadAndPlay]);
+
   const pausePlayback = useCallback(
     async (item: LoadedAudioItem) => {
       const requestId = beginTransition();
@@ -241,7 +294,7 @@ export function useAudioLibraryPlayer(
           );
           return;
         }
-        await persistState(item.id);
+        await persistState(item.id, false, { forcePersist: true });
         finishTransition(requestId);
       } catch {
         failPlayback(
@@ -313,7 +366,11 @@ export function useAudioLibraryPlayer(
           );
           return;
         }
-        await updateAudioItem(itemId, { lastPositionSeconds: target });
+        await updateAudioItem(
+          itemId,
+          { lastPositionSeconds: target },
+          { forcePersist: true },
+        );
         finishTransition(requestId);
       } catch {
         failPlayback(
@@ -352,6 +409,19 @@ export function useAudioLibraryPlayer(
     });
   }, []);
 
+  /**
+   * Volume for the shared engine (sleep fade-out). The generic hook owns
+   * this method on other platforms; without it GlobalPlayer's fade would
+   * crash on Android with "setVolume is not a function".
+   */
+  const setVolume = useCallback((volume: number) => {
+    if (!Number.isFinite(volume)) {
+      return;
+    }
+
+    void setAndroidAutoVolume(Math.min(Math.max(volume, 0), 1));
+  }, []);
+
   const removeActiveItem = useCallback(
     async (
       itemId: string,
@@ -359,12 +429,18 @@ export function useAudioLibraryPlayer(
       shouldPlayNext: boolean,
     ): Promise<boolean> => {
       const currentId = statusRef.current.mediaId;
+      // Remote (`remote:<id>`) owns the shared engine: there is no local
+      // item to dismiss, so report success without touching the engine —
+      // dismissing here would wipe the car/device remote playback.
+      if (currentId !== null && parseRemoteMediaId(currentId) !== null) {
+        return true;
+      }
       if (currentId !== null && currentId !== itemId) {
         return false;
       }
 
       if (currentId === itemId) {
-        await persistState(itemId);
+        await persistState(itemId, false, { forcePersist: true });
         if (!(await dismissAndroidAutoPlayback())) {
           return false;
         }
@@ -415,24 +491,98 @@ export function useAudioLibraryPlayer(
     ],
   );
 
-  return {
-    activeItemId: status.mediaId,
-    currentPositionSeconds: finiteNonNegative(status.currentPositionSeconds),
-    durationSeconds: finitePositive(status.durationSeconds),
-    isPlaying: status.isPlaying && playbackError === null,
-    isReady: isLibraryReady && status.serviceReady,
-    isTransitioning,
-    playbackError,
-    playbackRate: status.playbackRate,
-    dismissPlayer,
-    pausePlayback,
-    removeActiveItem,
-    resumePlayback,
-    seekBy,
-    seekTo,
-    setPlaybackRate,
-    togglePlayback,
-  };
+  // Remote (`remote:<id>`) media on the shared engine is owned by the
+  // remote hook: report no local item (and not local-playing) so the local
+  // surfaces, queue kind, and Up-next stay consistent with the remote
+  // surfaces that actually render it.
+  const isRemoteMedia = parseRemoteMediaId(status.mediaId) !== null;
+  const activeItemId = isRemoteMedia ? null : status.mediaId;
+  const currentPositionSeconds = finiteNonNegative(status.currentPositionSeconds);
+  const durationSeconds = finitePositive(status.durationSeconds);
+  const isPlaying = !isRemoteMedia && status.isPlaying && playbackError === null;
+  const isReady = isLibraryReady && status.serviceReady;
+  const playbackRate = status.playbackRate;
+
+  return useMemo(
+    () => ({
+      activeItemId,
+      currentPositionSeconds,
+      durationSeconds,
+      isBuffering: false as const,
+      isPlaying,
+      isReady,
+      isTransitioning,
+      playbackError,
+      playbackRate,
+      dismissPlayer,
+      pausePlayback,
+      removeActiveItem,
+      resumePlayback,
+      retryPlayback,
+      seekBy,
+      seekTo,
+      setPlaybackRate,
+      setVolume,
+      togglePlayback,
+    }),
+    [
+      activeItemId,
+      currentPositionSeconds,
+      dismissPlayer,
+      durationSeconds,
+      isPlaying,
+      isReady,
+      isTransitioning,
+      pausePlayback,
+      playbackError,
+      playbackRate,
+      removeActiveItem,
+      resumePlayback,
+      retryPlayback,
+      seekBy,
+      seekTo,
+      setPlaybackRate,
+      setVolume,
+      togglePlayback,
+    ],
+  );
+}
+
+function isPlaybackStateEquivalent(
+  previous: AndroidAutoPlaybackState,
+  next: AndroidAutoPlaybackState,
+): boolean {
+  if (
+    previous.serviceReady !== next.serviceReady ||
+    previous.mediaId !== next.mediaId ||
+    previous.isPlaying !== next.isPlaying ||
+    previous.isLoaded !== next.isLoaded ||
+    previous.isEnded !== next.isEnded ||
+    previous.error !== next.error ||
+    previous.playbackRate !== next.playbackRate
+  ) {
+    return false;
+  }
+
+  const prevDuration = previous.durationSeconds ?? null;
+  const nextDuration = next.durationSeconds ?? null;
+
+  if (prevDuration !== nextDuration) {
+    // Null ↔ number always matters; floats compare exactly because the
+    // service emits stable duration values, not interpolated ones.
+    if (
+      prevDuration === null ||
+      nextDuration === null ||
+      Math.abs(prevDuration - nextDuration) > 0.01
+    ) {
+      return false;
+    }
+  }
+
+  return (
+    Math.abs(previous.currentPositionSeconds - next.currentPositionSeconds) <
+    POSITION_DEDUP_TOLERANCE_SECONDS
+  );
 }
 
 function finiteNonNegative(value: number): number {

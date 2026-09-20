@@ -1,4 +1,5 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols';
+import { memo, useCallback } from 'react';
 import { View, XStack, YStack } from 'tamagui';
 
 import { EpisodeArtwork } from '@/components/episode-artwork';
@@ -19,7 +20,7 @@ type EpisodeResultRowProps = {
   onTogglePlayback: (item: LoadedAudioItem) => void;
 };
 
-export function EpisodeResultRow({
+export const EpisodeResultRow = memo(function EpisodeResultRow({
   item,
   isActive,
   isPlaying,
@@ -30,6 +31,10 @@ export function EpisodeResultRow({
   const theme = useTheme();
   const title = getEpisodeTitle(item.originalName);
   const isDisabled = !isPlaybackReady || !item.isAvailable || isTransitioning;
+  const handleToggle = useCallback(
+    () => onTogglePlayback(item),
+    [item, onTogglePlayback],
+  );
 
   return (
     <ThemedView
@@ -59,7 +64,7 @@ export function EpisodeResultRow({
           accessibilityLabel={`${isActive && isPlaying ? 'Pause' : 'Play'} ${title}`}
           accessibilityState={{ disabled: isDisabled }}
           disabled={isDisabled}
-          onPress={() => onTogglePlayback(item)}
+          onPress={handleToggle}
           backgroundColor={isActive ? '$accent' : '$backgroundSelected'}>
           <SymbolView
             name={isActive && isPlaying ? PAUSE_ICON : PLAY_ICON}
@@ -71,7 +76,7 @@ export function EpisodeResultRow({
       </XStack>
     </ThemedView>
   );
-}
+})
 
 const PLAY_ICON: SymbolViewProps['name'] = {
   ios: 'play.fill',

@@ -1,17 +1,29 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import {
   Animated,
-  Modal,
+  AppState,
   PanResponder,
   type LayoutChangeEvent,
   type PanResponderGestureState,
 } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
-import { ScrollView, View, XStack, YStack, useMedia } from 'tamagui'
+import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
 import { AudioPlaybackSlider } from '@/components/audio-playback-slider'
 import { EpisodeArtwork } from '@/components/episode-artwork'
+import { PlayerSheet } from '@/components/player-sheet'
+import { QueueSheet } from '@/components/queue-sheet'
+import { SleepTimerCard } from '@/components/sleep-timer-card'
+import { SpeedSheet } from '@/components/speed-sheet'
+import { SwipeableArtwork } from '@/components/swipeable-artwork'
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
 import { AppButton } from '@/components/ui/app-button'
@@ -23,27 +35,31 @@ import {
   Spacing,
 } from '@/constants/theme'
 import { useAudioLibraryContext } from '@/contexts/audio-library-context'
+import { useReducedMotion } from '@/hooks/use-reduced-motion'
+import { useSleepTimer } from '@/hooks/use-sleep-timer'
+import { useStalled } from '@/hooks/use-stalled'
 import { useTheme } from '@/hooks/use-theme'
 import type { RemoteAudio } from '@/services/api'
+import { impactLight } from '@/services/haptics'
+import { findNextQueueEntry, type QueueEntry } from '@/services/playback-queue'
+import {
+  clearSleepTimerState,
+  loadSleepTimerState,
+  saveSleepTimerState,
+} from '@/services/sleep-timer-storage'
 import {
   formatEpisodeDate,
   formatPlaybackTime,
   getAudioItemTitle,
 } from '@/utils/audio-display'
+import { getShowKey } from '@/utils/playback-rate'
 
-const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const
-const SLEEP_TIMER_OPTIONS = [
-  { label: '5m', minutes: 5 },
-  { label: '10m', minutes: 10 },
-  { label: '30m', minutes: 30 },
-  { label: '1h', minutes: 60 },
-  { label: '2h', minutes: 120 },
-] as const
-const ONE_MINUTE_MS = 60_000
-const SWIPE_DISMISS_FRACTION = 0.35
-const SWIPE_DISMISS_MIN_DISTANCE = 72
-const SWIPE_DISMISS_VELOCITY = 0.65
 const SWIPE_INTENT_DISTANCE = 10
+const DOCK_EXPAND_DISTANCE = 48
+/** Sleep fade-out: volume ramps 1 → 0 across the final 30s of a timed sleep. */
+const SLEEP_FADE_MS = 30_000
+/** A load/buffer that never resolves within ~8s is a stall, not a spinner. */
+const STALL_NOTICE_DELAY_MS = 8_000
 
 export function GlobalPlayer() {
   const {
@@ -55,6 +71,12 @@ export function GlobalPlayer() {
     openPlayer,
     openRemotePlayer,
     playerItem,
+    skipToNext,
+    skipToPrevious,
+    endOfEpisodeArmed,
+    armEndOfEpisode,
+    consumeEndOfEpisodeHold,
+    playbackQueue,
   } = useAudioLibraryContext()
   const activeItem =
     library.items.find((candidate) => candidate.id === playback.activeItemId) ??
@@ -67,89 +89,205 @@ export function GlobalPlayer() {
       : null
   const item = selectedLocalItem ?? activeItem
   const [playerWidth, setPlayerWidth] = useState(0)
-  const [sleepTimerEndsAt, setSleepTimerEndsAt] = useState<number | null>(null)
-  const [sleepTimerDurationMinutes, setSleepTimerDurationMinutes] = useState<
-    number | null
-  >(null)
-  const [sleepTimerRemainingMs, setSleepTimerRemainingMs] = useState<
-    number | null
-  >(null)
-  const activeItemIdRef = useRef<string | null>(null)
+  const [isQueueOpen, setIsQueueOpen] = useState(false)
+  const [isSpeedOpen, setIsSpeedOpen] = useState(false)
   const canSwipeRef = useRef(false)
-  const dismissPlayerRef = useRef(playback.dismissPlayer)
-  const isDismissingRef = useRef(false)
   const playerWidthRef = useRef(0)
   const wasPlayingBeforeScrubRef = useRef(false)
-  const sleepTimerPlaybackRef = useRef({
-    isPlaying: playback.isPlaying,
-    item: activeItem,
-    pausePlayback: playback.pausePlayback,
+  // Vertical drag distance on the collapsed dock; upward flings expand the
+  // sheet. Tracked in a ref because the responder outlives render state.
+  const dockDragYRef = useRef(0)
+  const expandDockRef = useRef<(() => void) | null>(null)
+  // The sleep timer pauses whichever player is active, so the countdown is
+  // shared by the local and remote surfaces. Playback refs are read lazily
+  // because status updates frequently.
+  const sleepPlaybackRef = useRef({
+    isLocalPlaying: playback.isPlaying,
+    localItem: activeItem,
+    pauseLocalPlayback: playback.pausePlayback,
+    isRemotePlaying: remotePlayback.isPlaying,
+    remoteAudio: remotePlayback.activeAudio,
+    pauseRemotePlayback: remotePlayback.pausePlayback,
+  })
+  const sleepTimer = useSleepTimer(() => {
+    const current = sleepPlaybackRef.current
+
+    // The fade-out lowers volume toward expiry; always restore full volume
+    // before pausing so the next session never starts silent.
+    playback.setVolume(1)
+    remotePlayback.setVolume(1)
+
+    if (current.isLocalPlaying && current.localItem) {
+      void current.pauseLocalPlayback(current.localItem)
+    } else if (current.isRemotePlaying && current.remoteAudio) {
+      current.pauseRemotePlayback(current.remoteAudio)
+    }
   })
   const swipeOffset = useRef(new Animated.Value(0)).current
   const media = useMedia()
   const theme = useTheme()
+  const reduceMotion = useReducedMotion()
+  const reduceMotionRef = useRef(reduceMotion)
+  reduceMotionRef.current = reduceMotion
   const activeItemId = activeItem?.id ?? null
 
   useEffect(() => {
-    sleepTimerPlaybackRef.current = {
-      isPlaying: playback.isPlaying,
-      item: activeItem,
-      pausePlayback: playback.pausePlayback,
+    sleepPlaybackRef.current = {
+      isLocalPlaying: playback.isPlaying,
+      localItem: activeItem,
+      pauseLocalPlayback: playback.pausePlayback,
+      isRemotePlaying: remotePlayback.isPlaying,
+      remoteAudio: remotePlayback.activeAudio,
+      pauseRemotePlayback: remotePlayback.pausePlayback,
     }
-  }, [activeItem, playback.isPlaying, playback.pausePlayback])
-
-  useEffect(() => {
-    if (sleepTimerEndsAt === null) {
-      return
-    }
-
-    const updateSleepTimer = () => {
-      const remainingMs = sleepTimerEndsAt - Date.now()
-
-      if (remainingMs <= 0) {
-        setSleepTimerEndsAt(null)
-        setSleepTimerDurationMinutes(null)
-        setSleepTimerRemainingMs(null)
-
-        const currentPlayback = sleepTimerPlaybackRef.current
-        if (currentPlayback.isPlaying && currentPlayback.item) {
-          void currentPlayback.pausePlayback(currentPlayback.item)
-        }
-        return
-      }
-
-      setSleepTimerRemainingMs(remainingMs)
-    }
-
-    const interval = setInterval(updateSleepTimer, 1_000)
-    return () => clearInterval(interval)
-  }, [sleepTimerEndsAt])
-
-  useEffect(() => {
-    activeItemIdRef.current = activeItemId
-    canSwipeRef.current =
-      activeItemId !== null &&
-      !isPlayerOpen &&
-      !playback.isTransitioning &&
-      !isDismissingRef.current
-    dismissPlayerRef.current = playback.dismissPlayer
   }, [
-    activeItemId,
-    isPlayerOpen,
-    playback.dismissPlayer,
-    playback.isTransitioning,
+    activeItem,
+    playback.isPlaying,
+    playback.pausePlayback,
+    remotePlayback.activeAudio,
+    remotePlayback.isPlaying,
+    remotePlayback.pausePlayback,
   ])
 
   useEffect(() => {
-    isDismissingRef.current = false
+    canSwipeRef.current =
+      activeItemId !== null && !isPlayerOpen && !playback.isTransitioning
+  }, [activeItemId, isPlayerOpen, playback.isTransitioning])
+
+  useEffect(() => {
     swipeOffset.setValue(0)
   }, [activeItemId, swipeOffset])
+
+  // Dock-up drag expands the collapsed dock into the sheet.
+  useEffect(() => {
+    expandDockRef.current = activeItem ? () => openPlayer(activeItem) : null
+  }, [activeItem, openPlayer])
+
+  // Sleep persistence: restore a countdown (or the end-of-episode hold) that
+  // survived an app kill, then persist every later change. Saves wait until
+  // the restore completes so mounting never wipes the stored state first.
+  const sleepRestoredRef = useRef(false)
+  const { restoreSleepTimer, refreshSleepTimer } = sleepTimer
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      // Foreground reconcile: background-throttled timers can leave a stale
+      // remaining label or a missed expiry; tick immediately on return.
+      if (nextState === 'active') {
+        refreshSleepTimer()
+      }
+    })
+
+    return () => subscription.remove()
+  }, [refreshSleepTimer])
+  useEffect(() => {
+    void (async () => {
+      const saved = await loadSleepTimerState()
+
+      if (saved) {
+        if (saved.endsAt !== null && saved.endsAt > Date.now()) {
+          restoreSleepTimer(saved.endsAt, saved.durationMinutes)
+        } else {
+          if (saved.endOfEpisode) {
+            armEndOfEpisode()
+          }
+
+          void clearSleepTimerState()
+        }
+      }
+
+      sleepRestoredRef.current = true
+    })()
+  }, [armEndOfEpisode, restoreSleepTimer])
+
+  useEffect(() => {
+    if (!sleepRestoredRef.current) {
+      return
+    }
+
+    if (sleepTimer.sleepTimerEndsAt === null && !endOfEpisodeArmed) {
+      void clearSleepTimerState()
+      return
+    }
+
+    void saveSleepTimerState({
+      endsAt: sleepTimer.sleepTimerEndsAt,
+      durationMinutes: sleepTimer.sleepTimerDurationMinutes,
+      endOfEpisode: endOfEpisodeArmed,
+    })
+  }, [
+    endOfEpisodeArmed,
+    sleepTimer.sleepTimerDurationMinutes,
+    sleepTimer.sleepTimerEndsAt,
+  ])
+
+  // Sleep fade-out: ramp the active player's volume 1 → 0 across the final
+  // 30s of a timed countdown. End-of-episode has no clock, so it never fades.
+  // Guarded so the volume bridge fires only when the stepped value changes,
+  // and the effect only re-runs on real inputs (not every 500 ms tick).
+  const lastFadeVolumeRef = useRef(1)
+  useEffect(() => {
+    const remainingMs = sleepTimer.sleepTimerRemainingMs
+
+    if (
+      sleepTimer.sleepTimerEndsAt === null ||
+      remainingMs === null ||
+      remainingMs > SLEEP_FADE_MS ||
+      remainingMs <= 0
+    ) {
+      lastFadeVolumeRef.current = 1
+      return
+    }
+
+    const volume = Math.min(Math.max(remainingMs / SLEEP_FADE_MS, 0), 1)
+
+    if (volume === lastFadeVolumeRef.current) {
+      return
+    }
+
+    lastFadeVolumeRef.current = volume
+
+    if (playback.activeItemId !== null) {
+      playback.setVolume(volume)
+    } else if (remotePlayback.activeAudioId !== null) {
+      remotePlayback.setVolume(volume)
+    }
+  }, [
+    playback.activeItemId,
+    playback.setVolume,
+    remotePlayback.activeAudioId,
+    remotePlayback.setVolume,
+    sleepTimer.sleepTimerEndsAt,
+    sleepTimer.sleepTimerRemainingMs,
+  ])
+
+  // Stall inputs stay early-safe: the remote early-return below skips the
+  // rest of this body, so no item-dependent hooks may come after it.
+  const [localRetryToken, setLocalRetryToken] = useState(0)
+  const viewingActiveItem = item?.id === activeItemId
+  const localStalled = useStalled(
+    (viewingActiveItem ?? false) &&
+      (playback.isTransitioning || playback.isBuffering),
+    STALL_NOTICE_DELAY_MS,
+    localRetryToken,
+  )
+
+  const handleRetryLocalPlayback = useCallback(() => {
+    impactLight()
+    setLocalRetryToken((token) => token + 1)
+    playback.retryPlayback()
+  }, [playback.retryPlayback])
 
   // Playback status updates frequently, so the responder reads current state from refs.
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
   const swipeDismissResponder = useMemo(() => {
     const restorePlayer = () => {
-      isDismissingRef.current = false
+      dockDragYRef.current = 0
+
+      if (reduceMotionRef.current) {
+        swipeOffset.setValue(0)
+        return
+      }
+
       Animated.spring(swipeOffset, {
         toValue: 0,
         damping: 20,
@@ -162,64 +300,112 @@ export function GlobalPlayer() {
     const shouldClaimSwipe = (
       _event: unknown,
       gesture: PanResponderGestureState,
-    ) =>
-      canSwipeRef.current &&
-      Math.abs(gesture.dx) >= SWIPE_INTENT_DISTANCE &&
-      Math.abs(gesture.dx) > Math.abs(gesture.dy)
+    ) => {
+      if (!canSwipeRef.current) {
+        return false
+      }
+
+      // Horizontal swipe: non-destructive, springs back on release.
+      if (
+        Math.abs(gesture.dx) >= SWIPE_INTENT_DISTANCE &&
+        Math.abs(gesture.dx) > Math.abs(gesture.dy)
+      ) {
+        return true
+      }
+
+      // Vertical dock-up: expands the collapsed dock into the sheet.
+      return (
+        gesture.dy <= -SWIPE_INTENT_DISTANCE &&
+        Math.abs(gesture.dy) > Math.abs(gesture.dx)
+      )
+    }
 
     // PanResponder stores these callbacks and invokes them only for touch events.
     // eslint-disable-next-line react-hooks/refs
     return PanResponder.create({
       onMoveShouldSetPanResponder: shouldClaimSwipe,
       onMoveShouldSetPanResponderCapture: shouldClaimSwipe,
-      onPanResponderGrant: () => swipeOffset.stopAnimation(),
-      onPanResponderMove: (_event, gesture) => swipeOffset.setValue(gesture.dx),
+      onPanResponderGrant: () => {
+        dockDragYRef.current = 0
+        swipeOffset.stopAnimation()
+      },
+      onPanResponderMove: (_event, gesture) => {
+        dockDragYRef.current = gesture.dy
+        swipeOffset.setValue(gesture.dx)
+      },
       onPanResponderRelease: (_event, gesture) => {
-        const dismissDistance = Math.max(
-          SWIPE_DISMISS_MIN_DISTANCE,
-          playerWidthRef.current * SWIPE_DISMISS_FRACTION,
-        )
-        const movedFarEnough = Math.abs(gesture.dx) >= dismissDistance
-        const movedFastEnough = Math.abs(gesture.vx) >= SWIPE_DISMISS_VELOCITY
-
+        // Drag dock-up expands; horizontal swipe is never destructive and
+        // springs back. Playback can only be stopped via pause/stop buttons.
         if (
-          !canSwipeRef.current ||
-          !activeItemIdRef.current ||
-          (!movedFarEnough && !movedFastEnough)
+          gesture.dy <= -DOCK_EXPAND_DISTANCE &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx)
         ) {
-          restorePlayer()
+          dockDragYRef.current = 0
+          swipeOffset.setValue(0)
+          expandDockRef.current?.()
           return
         }
 
-        isDismissingRef.current = true
-        canSwipeRef.current = false
-        const direction = gesture.dx < 0 ? -1 : 1
-        const target = direction * (playerWidthRef.current + Spacing.four)
-
-        Animated.timing(swipeOffset, {
-          toValue: target,
-          duration: 180,
-          useNativeDriver: true,
-        }).start(({ finished }) => {
-          if (!finished) {
-            restorePlayer()
-            return
-          }
-
-          void dismissPlayerRef
-            .current()
-            .then((didDismiss) => {
-              if (!didDismiss) {
-                restorePlayer()
-              }
-            })
-            .catch(restorePlayer)
-        })
+        restorePlayer()
       },
       onPanResponderTerminate: restorePlayer,
       onPanResponderTerminationRequest: () => true,
     })
   }, [swipeOffset])
+
+  const clearSleepTimer = useCallback(() => {
+    impactLight()
+    consumeEndOfEpisodeHold()
+    sleepTimer.clearSleepTimer()
+    // A cleared timer must never leave faded volume behind.
+    lastFadeVolumeRef.current = 1
+    playback.setVolume(1)
+    remotePlayback.setVolume(1)
+  }, [
+    consumeEndOfEpisodeHold,
+    playback.setVolume,
+    remotePlayback.setVolume,
+    sleepTimer,
+  ])
+
+  const handleSetSleepMinutes = useCallback(
+    (minutes: number) => {
+      impactLight()
+      sleepTimer.handleSetSleepTimer(minutes)
+    },
+    [sleepTimer],
+  )
+
+  const handleArmEndOfEpisode = useCallback(() => {
+    impactLight()
+    armEndOfEpisode()
+  }, [armEndOfEpisode])
+
+  const handleOpenQueue = useCallback(() => setIsQueueOpen(true), [])
+  const handleCloseQueue = useCallback(() => setIsQueueOpen(false), [])
+
+  const sleepTimerCard = useMemo(
+    () => (
+      <SleepTimerCard
+        endsAt={sleepTimer.sleepTimerEndsAt}
+        durationMinutes={sleepTimer.sleepTimerDurationMinutes}
+        remaining={sleepTimer.sleepTimerRemaining}
+        endOfEpisodeArmed={endOfEpisodeArmed}
+        onSetMinutes={handleSetSleepMinutes}
+        onSetEndOfEpisode={handleArmEndOfEpisode}
+        onClear={clearSleepTimer}
+      />
+    ),
+    [
+      clearSleepTimer,
+      endOfEpisodeArmed,
+      handleArmEndOfEpisode,
+      handleSetSleepMinutes,
+      sleepTimer.sleepTimerDurationMinutes,
+      sleepTimer.sleepTimerEndsAt,
+      sleepTimer.sleepTimerRemaining,
+    ],
+  )
 
   const remoteItem =
     playerItem?.kind === 'remote'
@@ -227,64 +413,117 @@ export function GlobalPlayer() {
       : playerItem?.kind === 'local'
         ? null
         : remotePlayback.activeAudio
-  const remotePlayingAudio = remotePlayback.isPlaying
-    ? remotePlayback.activeAudio
-    : null
-  const remotePlayingImageUrl = remotePlayingAudio
-    ? getRemoteAudioCoverArtUrl(remotePlayingAudio.metadata)
-    : null
-  const localPlayingBanner =
-    activeItem && playback.isPlaying ? (
-      <CurrentlyPlayingBanner
-        disabled={
-          playback.isTransitioning ||
-          !playback.isReady ||
-          !activeItem.isAvailable
-        }
-        imageUrl={activeItem.metadata.coverArtUrl}
-        itemId={activeItem.id}
-        name={getAudioItemTitle(activeItem)}
-        onOpen={() => openPlayer(activeItem)}
-        onToggle={() => playback.togglePlayback(activeItem)}
-        tintColor={theme.accent}
-        title={getAudioItemTitle(activeItem)}
-      />
-    ) : null
-  const isViewingPlayingAudio =
-    isPlayerOpen &&
-    (remotePlayingAudio
-      ? playerItem?.kind === 'remote' &&
-        remotePlayingAudio.id === playerItem.audio.id
-      : playerItem?.kind === 'local' &&
-        activeItem?.id === playerItem.item.id &&
-        playback.isPlaying)
-  const playingBanner = isViewingPlayingAudio
-    ? null
-    : remotePlayingAudio
-      ? (
-          <CurrentlyPlayingBanner
-            disabled={remotePlayback.isTransitioning}
-            imageUrl={remotePlayingImageUrl}
-            itemId={`remote-${remotePlayingAudio.id}`}
-            name={remotePlayingAudio.title}
-            onOpen={() => openRemotePlayer(remotePlayingAudio)}
-            onToggle={() => remotePlayback.togglePlayback(remotePlayingAudio)}
-            tintColor={theme.accent}
-            title={remotePlayingAudio.title}
-          />
-        )
-      : localPlayingBanner
+  const openQueueButton = useMemo(
+    () => <OpenQueueButton onPress={handleOpenQueue} />,
+    [handleOpenQueue],
+  )
+  const queueActiveKind: QueueEntry['kind'] | null = useMemo(
+    () =>
+      playback.activeItemId !== null
+        ? 'local'
+        : remotePlayback.activeAudioId !== null
+          ? 'remote'
+          : null,
+    [playback.activeItemId, remotePlayback.activeAudioId],
+  )
+  const queueActiveId =
+    playback.activeItemId ?? remotePlayback.activeAudioId ?? null
+  // Honest Up-next: the entry auto-advance will actually play, or end of
+  // queue. Reads the same active queue as the transport and the sheet.
+  const upNextEntry = useMemo(
+    () =>
+      queueActiveKind !== null &&
+      queueActiveId !== null &&
+      playbackQueue !== null
+        ? findNextQueueEntry(
+            playbackQueue.entries,
+            queueActiveKind,
+            queueActiveId,
+            playbackQueue.isOnline,
+          )
+        : null,
+    [playbackQueue, queueActiveId, queueActiveKind],
+  )
+  const upNextTitle = useMemo(
+    () =>
+      upNextEntry
+        ? upNextEntry.kind === 'local'
+          ? getAudioItemTitle(upNextEntry.item)
+          : upNextEntry.audio.title
+        : null,
+    [upNextEntry],
+  )
+  const queueSheet = useMemo(
+    () => (isQueueOpen ? <QueueSheet onClose={handleCloseQueue} /> : null),
+    [handleCloseQueue, isQueueOpen],
+  )
+
+  // All hooks must run unconditionally before any early return: the
+  // remote / empty branches below skip rendering (not hooks), otherwise
+  // toggling between local and remote surfaces throws "rendered more hooks
+  // than during the previous render".
+  const isViewingActiveItem = item?.id === activeItemId
+  const fadeDistance = Math.max(playerWidth, 1)
+  // Per-render Animated interpolation nodes (§P1): memoize so the 2 Hz
+  // tick doesn't rebuild them for the whole dock/sheet tree.
+  const swipeOpacity = useMemo(
+    () =>
+      swipeOffset.interpolate({
+        inputRange: [-fadeDistance, 0, fadeDistance],
+        outputRange: [0, 1, 0],
+        extrapolate: 'clamp',
+      }),
+    [fadeDistance, swipeOffset],
+  )
+
+  const handlePlayerLayout = useCallback((event: LayoutChangeEvent) => {
+    const width = event.nativeEvent.layout.width
+    playerWidthRef.current = width
+    setPlayerWidth(width)
+  }, [])
+
+  const handleScrubStart = useCallback(() => {
+    if (!isViewingActiveItem || !item) {
+      return
+    }
+
+    impactLight()
+    wasPlayingBeforeScrubRef.current = playback.isPlaying
+
+    if (playback.isPlaying) {
+      return playback.pausePlayback(item)
+    }
+  }, [isViewingActiveItem, item, playback.isPlaying, playback.pausePlayback])
+
+  const handleScrubEnd = useCallback(() => {
+    if (!isViewingActiveItem || !item) {
+      return
+    }
+
+    const shouldResume = wasPlayingBeforeScrubRef.current
+    wasPlayingBeforeScrubRef.current = false
+
+    if (shouldResume) {
+      return playback.resumePlayback(item)
+    }
+  }, [isViewingActiveItem, item, playback.resumePlayback])
 
   if (remoteItem) {
     return (
-      <RemotePlayerSurface
-        audio={remoteItem}
-        closePlayer={closePlayer}
-        isPlayerOpen={isPlayerOpen && playerItem?.kind === 'remote'}
-        openPlayer={openRemotePlayer}
-        playingBanner={playingBanner}
-        remotePlayback={remotePlayback}
-      />
+      <>
+        <RemotePlayerSurface
+          audio={remoteItem}
+          closePlayer={closePlayer}
+          isPlayerOpen={isPlayerOpen && playerItem?.kind === 'remote'}
+          onOpenQueue={handleOpenQueue}
+          onSkipToNext={skipToNext}
+          onSkipToPrevious={skipToPrevious}
+          openPlayer={openRemotePlayer}
+          remotePlayback={remotePlayback}
+          sleepTimerCard={sleepTimerCard}
+        />
+        {queueSheet}
+      </>
     )
   }
 
@@ -292,7 +531,6 @@ export function GlobalPlayer() {
     return null
   }
 
-  const isViewingActiveItem = item.id === activeItemId
   const duration = isViewingActiveItem
     ? (playback.durationSeconds ?? item.durationSeconds)
     : item.durationSeconds
@@ -318,65 +556,9 @@ export function GlobalPlayer() {
     playback.isTransitioning || !playback.isReady || !item.isAvailable
   const isDockDisabled =
     playback.isTransitioning || !playback.isReady || !activeItem?.isAvailable
-  const fadeDistance = Math.max(playerWidth, 1)
-  const swipeOpacity = swipeOffset.interpolate({
-    inputRange: [-fadeDistance, 0, fadeDistance],
-    outputRange: [0, 1, 0],
-    extrapolate: 'clamp',
-  })
-
-  const handlePlayerLayout = (event: LayoutChangeEvent) => {
-    const width = event.nativeEvent.layout.width
-    playerWidthRef.current = width
-    setPlayerWidth(width)
-  }
-
-  const handleScrubStart = () => {
-    if (!isViewingActiveItem) {
-      return
-    }
-
-    wasPlayingBeforeScrubRef.current = playback.isPlaying
-
-    if (playback.isPlaying) {
-      return playback.pausePlayback(item)
-    }
-  }
-
-  const handleScrubEnd = () => {
-    if (!isViewingActiveItem) {
-      return
-    }
-
-    const shouldResume = wasPlayingBeforeScrubRef.current
-    wasPlayingBeforeScrubRef.current = false
-
-    if (shouldResume) {
-      return playback.resumePlayback(item)
-    }
-  }
-
-  const handleSetSleepTimer = (minutes: number) => {
-    const durationMs = minutes * ONE_MINUTE_MS
-    setSleepTimerDurationMinutes(minutes)
-    setSleepTimerRemainingMs(durationMs)
-    setSleepTimerEndsAt(Date.now() + durationMs)
-  }
-
-  const clearSleepTimer = () => {
-    setSleepTimerEndsAt(null)
-    setSleepTimerDurationMinutes(null)
-    setSleepTimerRemainingMs(null)
-  }
-
-  const sleepTimerRemaining =
-    sleepTimerRemainingMs === null
-      ? null
-      : formatSleepTimerRemaining(sleepTimerRemainingMs)
-
   return (
     <>
-      {activeItem && (
+      {activeItem && !isPlayerOpen && (
         <Animated.View
           {...swipeDismissResponder.panHandlers}
           onLayout={handlePlayerLayout}
@@ -411,6 +593,7 @@ export function GlobalPlayer() {
               <AppButton
                 tone="ghost"
                 accessibilityLabel={`Open now playing for ${getAudioItemTitle(activeItem)}`}
+                accessibilityHint="Drag up to expand the full player"
                 onPress={() => openPlayer(activeItem)}
                 minWidth={0}
                 flex={1}
@@ -422,12 +605,14 @@ export function GlobalPlayer() {
                   itemId={activeItem.id}
                   name={getAudioItemTitle(activeItem)}
                   size={54}
+                  isBuffering={playback.isTransitioning}
                 />
                 <YStack flex={1} minWidth={0} alignItems="flex-start">
                   <ThemedText
                     type="episodeTitle"
                     numberOfLines={1}
                     width="100%"
+                    maxFontSizeMultiplier={2}
                   >
                     {getAudioItemTitle(activeItem)}
                   </ThemedText>
@@ -435,6 +620,7 @@ export function GlobalPlayer() {
                     type="metadata"
                     themeColor="textSecondary"
                     numberOfLines={1}
+                    maxFontSizeMultiplier={2}
                   >
                     {playback.isTransitioning
                       ? 'Loading…'
@@ -449,7 +635,11 @@ export function GlobalPlayer() {
                 accessibilityLabel={playback.isPlaying ? 'Pause' : 'Play'}
                 disabled={isDockDisabled}
                 icon={playback.isPlaying ? PAUSE_ICON : PLAY_ICON}
-                onPress={() => playback.togglePlayback(activeItem)}
+                isLoading={playback.isTransitioning}
+                onPress={() => {
+                  impactLight()
+                  playback.togglePlayback(activeItem)
+                }}
                 tintColor={theme.accentForeground}
               />
             </XStack>
@@ -471,14 +661,11 @@ export function GlobalPlayer() {
         </Animated.View>
       )}
 
-      <Modal
-        animationType="slide"
-        presentationStyle="fullScreen"
+      <PlayerSheet
         visible={isPlayerOpen}
-        onRequestClose={closePlayer}
-      >
-        <ThemedView flex={1}>
-          <SafeAreaView style={{ flex: 1 }}>
+        onClose={closePlayer}
+        header={
+          <>
             <XStack
               alignItems="center"
               justifyContent="space-between"
@@ -488,6 +675,7 @@ export function GlobalPlayer() {
               <AppButton
                 tone="icon"
                 accessibilityLabel="Close now playing"
+                accessibilityHint="Collapses the player back to the mini dock"
                 onPress={closePlayer}
               >
                 <SymbolView
@@ -501,299 +689,267 @@ export function GlobalPlayer() {
                 <ThemedText type="eyebrow" themeColor="accent">
                   Now playing
                 </ThemedText>
-                <ThemedText type="metadata" themeColor="textSecondary">
+                <ThemedText
+                  type="metadata"
+                  themeColor="textSecondary"
+                  maxFontSizeMultiplier={2}
+                >
                   Podcast Me
                 </ThemedText>
               </YStack>
               <View width={44} />
             </XStack>
 
-            {playingBanner}
-
-            <ScrollView
-              flex={1}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={{
-                alignItems: 'center',
-                paddingBottom: Spacing.four,
-              }}
-            >
-              <YStack
-                width="100%"
-                maxWidth={640}
-                flex={1}
+            {openQueueButton}
+          </>
+        }
+        footer={
+          <YStack gap={Spacing.two}>
+            {localStalled && <StallNotice onRetry={handleRetryLocalPlayback} />}
+            <AudioPlaybackSlider
+              accessibilityLabel={`${itemTitle} playback position`}
+              // Local files are fully on disk and expo-audio exposes no
+              // buffered position: null hides the buffered layer (honest).
+              bufferedSeconds={null}
+              disabled={isDisabled || duration === null || !isViewingActiveItem}
+              durationSeconds={duration}
+              onScrubEnd={handleScrubEnd}
+              onScrubStart={handleScrubStart}
+              onSeekTo={playback.seekTo}
+              positionSeconds={positionSeconds}
+            />
+            {playback.playbackError?.itemId === item.id && (
+              <XStack
+                accessibilityLiveRegion="polite"
+                accessibilityRole="alert"
                 alignItems="center"
-                gap={media.short ? Spacing.three : Spacing.four}
-                paddingHorizontal={Spacing.four}
-                paddingTop={media.short ? Spacing.one : Spacing.three}
+                justifyContent="space-between"
+                gap={Spacing.two}
+                width="100%"
               >
-                <ThemedView
-                  type="backgroundElement"
-                  padding={Spacing.three}
-                  borderRadius={Radius.large}
-                  borderWidth={1}
-                  borderColor="$borderColor"
-                  boxShadow="0 22px 50px rgba(0,0,0,0.28)"
+                <ThemedText
+                  type="metadata"
+                  color="$danger"
+                  flex={1}
+                  flexShrink={1}
                 >
-                  <EpisodeArtwork
-                    imageUrl={item.metadata.coverArtUrl}
-                    itemId={item.id}
-                    name={itemTitle}
-                    size={artworkSize}
-                  />
-                </ThemedView>
-
-                <YStack width="100%" alignItems="center" gap={Spacing.one}>
-                  <ThemedText
-                    type="heading"
-                    textAlign="center"
-                    numberOfLines={3}
-                    $compact={{ fontSize: 22, lineHeight: 28 }}
-                  >
-                    {itemTitle}
-                  </ThemedText>
-                  <ThemedText type="default" themeColor="textSecondary">
-                    {itemMetadataSummary ||
-                      `Local recording · ${formatEpisodeDate(item.addedAt)}`}
-                  </ThemedText>
-                  <XStack
-                    alignItems="center"
-                    gap={Spacing.one}
-                    marginTop={Spacing.one}
-                  >
-                    <View
-                      width={7}
-                      height={7}
-                      borderRadius={7}
-                      backgroundColor="$success"
-                    />
-                    <ThemedText type="metadata" themeColor="textSecondary">
-                      Downloaded
-                    </ThemedText>
-                  </XStack>
-                </YStack>
-
-                <YStack width="100%" gap={Spacing.two}>
-                  <AudioPlaybackSlider
-                    accessibilityLabel={`${itemTitle} playback position`}
-                    bufferedSeconds={item.isAvailable ? duration : null}
-                    disabled={
-                      isDisabled || duration === null || !isViewingActiveItem
-                    }
-                    durationSeconds={duration}
-                    onScrubEnd={handleScrubEnd}
-                    onScrubStart={handleScrubStart}
-                    onSeekTo={playback.seekTo}
-                    positionSeconds={positionSeconds}
-                  />
-                  {playback.playbackError?.itemId === item.id && (
-                    <ThemedText
-                      type="metadata"
-                      color="$danger"
-                      textAlign="center"
-                    >
-                      {playback.playbackError.message}
-                    </ThemedText>
-                  )}
-                </YStack>
-
-                <XStack
-                  width="100%"
-                  alignItems="center"
-                  justifyContent="space-around"
+                  {playback.playbackError.message}
+                </ThemedText>
+                <AppButton
+                  tone="secondary"
+                  accessibilityLabel={`Retry ${itemTitle}`}
+                  accessibilityHint="Restarts loading the current episode"
+                  onPress={handleRetryLocalPlayback}
+                  minHeight={44}
+                  flexShrink={0}
                 >
-                  <TransportButton
-                    accessibilityLabel="Rewind 15 seconds"
-                    disabled={isDisabled || !isViewingActiveItem}
-                    label="15"
-                    icon={REWIND_ICON}
-                    onPress={() => playback.seekBy(-15)}
-                    tintColor={theme.text}
-                  />
-                  <PlayerIconButton
-                    large
-                    accessibilityLabel={
-                      isViewingActiveItem && playback.isPlaying
-                        ? 'Pause'
-                        : 'Play'
-                    }
-                    disabled={isDisabled}
-                    icon={
-                      isViewingActiveItem && playback.isPlaying
-                        ? PAUSE_ICON
-                        : PLAY_ICON
-                    }
-                    onPress={() => playback.togglePlayback(item)}
-                    tintColor={theme.accentForeground}
-                  />
-                  <TransportButton
-                    accessibilityLabel="Forward 15 seconds"
-                    disabled={isDisabled || !isViewingActiveItem}
-                    label="15"
-                    icon={FORWARD_ICON}
-                    onPress={() => playback.seekBy(15)}
-                    tintColor={theme.text}
-                  />
-                </XStack>
+                  <ThemedText type="smallBold">Retry</ThemedText>
+                </AppButton>
+              </XStack>
+            )}
 
-                <XStack
-                  width="100%"
-                  alignItems="center"
-                  justifyContent="space-between"
+            <XStack
+              width="100%"
+              alignItems="center"
+              justifyContent="space-around"
+            >
+              <SkipButton
+                accessibilityLabel="Previous episode"
+                disabled={isDisabled || !isViewingActiveItem}
+                icon={PREV_ICON}
+                onPress={() => {
+                  impactLight()
+                  skipToPrevious()
+                }}
+                tintColor={theme.text}
+              />
+              <TransportButton
+                accessibilityLabel="Rewind 15 seconds"
+                accessibilityHint={
+                  (duration ?? 0) > 3_600
+                    ? 'Long-press to rewind 60 seconds on this long episode'
+                    : 'Long-press to rewind 30 seconds'
+                }
+                disabled={isDisabled || !isViewingActiveItem}
+                label="15"
+                icon={REWIND_ICON}
+                onPress={() => {
+                  impactLight()
+                  playback.seekBy(-15)
+                }}
+                onLongPress={() => {
+                  impactLight()
+                  playback.seekBy(-getLongPressSeekSeconds(duration))
+                }}
+                tintColor={theme.text}
+              />
+              <PlayerIconButton
+                large
+                accessibilityLabel={
+                  isViewingActiveItem && playback.isPlaying ? 'Pause' : 'Play'
+                }
+                disabled={isDisabled}
+                icon={
+                  isViewingActiveItem && playback.isPlaying
+                    ? PAUSE_ICON
+                    : PLAY_ICON
+                }
+                isLoading={isViewingActiveItem && playback.isTransitioning}
+                onPress={() => {
+                  impactLight()
+                  playback.togglePlayback(item)
+                }}
+                tintColor={theme.accentForeground}
+              />
+              <TransportButton
+                accessibilityLabel="Forward 15 seconds"
+                accessibilityHint={
+                  (duration ?? 0) > 3_600
+                    ? 'Long-press to jump forward 60 seconds on this long episode'
+                    : 'Long-press to jump forward 30 seconds'
+                }
+                disabled={isDisabled || !isViewingActiveItem}
+                label="15"
+                icon={FORWARD_ICON}
+                onPress={() => {
+                  impactLight()
+                  playback.seekBy(15)
+                }}
+                onLongPress={() => {
+                  impactLight()
+                  playback.seekBy(getLongPressSeekSeconds(duration))
+                }}
+                tintColor={theme.text}
+              />
+              <SkipButton
+                accessibilityLabel="Next episode"
+                disabled={isDisabled || !isViewingActiveItem}
+                icon={NEXT_ICON}
+                onPress={() => {
+                  impactLight()
+                  skipToNext()
+                }}
+                tintColor={theme.text}
+              />
+            </XStack>
+            <LongPressHint visible={(duration ?? 0) > 3_600} />
+
+            <XStack
+              width="100%"
+              alignItems="center"
+              justifyContent="space-between"
+            >
+              <AppButton
+                tone="secondary"
+                accessibilityLabel={`Playback speed ${playback.playbackRate} times`}
+                accessibilityHint="Opens speed options from half to triple speed"
+                onPress={() => setIsSpeedOpen(true)}
+              >
+                <ThemedText type="smallBold">
+                  {playback.playbackRate}× speed
+                </ThemedText>
+              </AppButton>
+              <YStack alignItems="flex-end" flexShrink={1}>
+                <ThemedText
+                  type="metadata"
+                  themeColor="textSecondary"
+                  maxFontSizeMultiplier={2}
                 >
-                  <AppButton
-                    tone="secondary"
-                    accessibilityLabel={`Playback speed ${playback.playbackRate} times`}
-                    onPress={() =>
-                      playback.setPlaybackRate(
-                        nextPlaybackRate(playback.playbackRate),
-                      )
-                    }
-                  >
-                    <ThemedText type="smallBold">
-                      {playback.playbackRate}× speed
-                    </ThemedText>
-                  </AppButton>
-                  <YStack alignItems="flex-end">
-                    <ThemedText type="metadata" themeColor="textSecondary">
-                      Up next
-                    </ThemedText>
-                    <ThemedText type="smallBold">
-                      {Math.max(0, library.items.length - 1)} in queue
-                    </ThemedText>
-                  </YStack>
-                </XStack>
-
-                <ThemedView
-                  type="backgroundElement"
-                  width="100%"
-                  gap={Spacing.three}
-                  padding={Spacing.three}
-                  borderWidth={1}
-                  borderColor={
-                    sleepTimerEndsAt === null ? '$borderColor' : '$accent'
+                  Up next
+                </ThemedText>
+                <ThemedText
+                  type="smallBold"
+                  numberOfLines={1}
+                  maxWidth={200}
+                  maxFontSizeMultiplier={2}
+                  accessibilityLabel={
+                    upNextTitle ? `Up next: ${upNextTitle}` : 'End of queue'
                   }
-                  borderRadius={Radius.large}
                 >
-                  <XStack alignItems="center" gap={Spacing.two}>
-                    <View
-                      width={42}
-                      height={42}
-                      alignItems="center"
-                      justifyContent="center"
-                      borderRadius={Radius.round}
-                      backgroundColor={
-                        sleepTimerEndsAt === null
-                          ? '$backgroundSelected'
-                          : '$accentSubtle'
-                      }
-                    >
-                      <SymbolView
-                        name={SLEEP_ICON}
-                        size={21}
-                        tintColor={
-                          sleepTimerEndsAt === null
-                            ? theme.textSecondary
-                            : theme.accent
-                        }
-                        weight="semibold"
-                      />
-                    </View>
-                    <YStack flex={1} gap={Spacing.half}>
-                      <ThemedText type="smallBold">Sleep timer</ThemedText>
-                      {sleepTimerRemaining ? (
-                        <YStack gap={Spacing.half}>
-                          <ThemedText type="metadata" themeColor="accent">
-                            Playback pauses in
-                          </ThemedText>
-                          <ThemedText
-                            type="heading"
-                            themeColor="accent"
-                            fontSize={20}
-                            lineHeight={24}
-                            accessibilityLabel={`Sleep Timer: ${sleepTimerRemaining}`}
-                            accessibilityLiveRegion="polite"
-                          >
-                            {sleepTimerRemaining}
-                          </ThemedText>
-                        </YStack>
-                      ) : (
-                        <ThemedText type="metadata" themeColor="textSecondary">
-                          Choose when playback should pause
-                        </ThemedText>
-                      )}
-                    </YStack>
-                    {sleepTimerEndsAt !== null && (
-                      <AppButton
-                        tone="icon"
-                        accessibilityLabel="Cancel sleep timer"
-                        onPress={clearSleepTimer}
-                        borderWidth={1}
-                        borderColor="$accent"
-                        backgroundColor="$accentSubtle"
-                      >
-                        <SymbolView
-                          name={CLEAR_TIMER_ICON}
-                          size={18}
-                          tintColor={theme.accent}
-                          weight="semibold"
-                        />
-                      </AppButton>
-                    )}
-                  </XStack>
-
-                  <XStack
-                    accessibilityRole="radiogroup"
-                    width="100%"
-                    gap={Spacing.one}
-                    padding={Spacing.one}
-                    borderRadius={Radius.round}
-                    backgroundColor="$backgroundSelected"
-                  >
-                    {SLEEP_TIMER_OPTIONS.map((option) => {
-                      const isSelected =
-                        sleepTimerDurationMinutes === option.minutes
-
-                      return (
-                        <AppButton
-                          key={option.minutes}
-                          tone="outlined"
-                          accessibilityLabel={
-                            isSelected && sleepTimerRemaining
-                              ? `Sleep Timer: ${sleepTimerRemaining}`
-                              : `Set sleep timer for ${option.label}`
-                          }
-                          accessibilityRole="radio"
-                          accessibilityState={{ selected: isSelected }}
-                          onPress={() => handleSetSleepTimer(option.minutes)}
-                          flex={1}
-                          minWidth={0}
-                          minHeight={44}
-                          paddingHorizontal={0}
-                          paddingVertical={Spacing.two}
-                          borderWidth={0}
-                          backgroundColor={
-                            isSelected ? '$accent' : 'transparent'
-                          }
-                        >
-                          <ThemedText
-                            type="smallBold"
-                            color={
-                              isSelected ? theme.accentForeground : theme.text
-                            }
-                          >
-                            {option.label}
-                          </ThemedText>
-                        </AppButton>
-                      )
-                    })}
-                  </XStack>
-                </ThemedView>
+                  {upNextTitle ?? 'End of queue'}
+                </ThemedText>
               </YStack>
-            </ScrollView>
-          </SafeAreaView>
-        </ThemedView>
-      </Modal>
+            </XStack>
+          </YStack>
+        }
+      >
+        <YStack
+          width="100%"
+          maxWidth={640}
+          flex={1}
+          alignItems="center"
+          gap={media.short ? Spacing.three : Spacing.four}
+          paddingHorizontal={Spacing.four}
+          paddingTop={media.short ? Spacing.one : Spacing.three}
+        >
+          <SwipeableArtwork
+            disabled={isDisabled || !isViewingActiveItem}
+            itemTitle={itemTitle}
+            onSwipeLeft={() => skipToNext()}
+            onSwipeRight={() => skipToPrevious()}
+          >
+            <ThemedView
+              type="backgroundElement"
+              padding={Spacing.three}
+              borderRadius={Radius.large}
+              borderWidth={1}
+              borderColor="$borderColor"
+              boxShadow="0 22px 50px rgba(0,0,0,0.28)"
+            >
+              <EpisodeArtwork
+                imageUrl={item.metadata.coverArtUrl}
+                itemId={item.id}
+                name={itemTitle}
+                size={artworkSize}
+                isBuffering={isViewingActiveItem && playback.isTransitioning}
+              />
+            </ThemedView>
+          </SwipeableArtwork>
+
+          <YStack width="100%" alignItems="center" gap={Spacing.one}>
+            <ThemedText
+              type="heading"
+              textAlign="center"
+              numberOfLines={3}
+              $compact={{ fontSize: 22, lineHeight: 28 }}
+            >
+              {itemTitle}
+            </ThemedText>
+            <ThemedText type="default" themeColor="textSecondary">
+              {itemMetadataSummary ||
+                `Local recording · ${formatEpisodeDate(item.addedAt)}`}
+            </ThemedText>
+            <XStack
+              alignItems="center"
+              gap={Spacing.one}
+              marginTop={Spacing.one}
+            >
+              <View
+                width={7}
+                height={7}
+                borderRadius={7}
+                backgroundColor="$success"
+              />
+              <ThemedText type="metadata" themeColor="textSecondary">
+                Downloaded
+              </ThemedText>
+            </XStack>
+          </YStack>
+
+          {sleepTimerCard}
+        </YStack>
+      </PlayerSheet>
+      {isSpeedOpen && (
+        <SpeedSheet
+          currentRate={playback.playbackRate}
+          onClose={() => setIsSpeedOpen(false)}
+          onSelect={(rate) => {
+            playback.setPlaybackRate(rate, getShowKey(item.metadata))
+            setIsSpeedOpen(false)
+          }}
+        />
+      )}
+      {queueSheet}
     </>
   )
 }
@@ -802,12 +958,16 @@ type RemotePlayerSurfaceProps = {
   audio: RemoteAudio
   closePlayer: () => void
   isPlayerOpen: boolean
+  onOpenQueue: () => void
+  onSkipToNext: () => void
+  onSkipToPrevious: () => void
   openPlayer: (audio: RemoteAudio) => void
-  playingBanner: ReactNode
+  sleepTimerCard: ReactNode
   remotePlayback: {
     activeAudio: RemoteAudio | null
     currentPositionSeconds: number
     durationSeconds: number | null
+    isBuffering: boolean
     isPlaying: boolean
     isTransitioning: boolean
     isUsingCachedSource: boolean
@@ -815,9 +975,10 @@ type RemotePlayerSurfaceProps = {
     playbackRate: number
     pausePlayback: (audio: RemoteAudio) => void
     resumePlayback: (audio: RemoteAudio) => void
+    retryPlayback: () => void
     seekBy: (offsetSeconds: number) => void
     seekTo: (positionSeconds: number) => Promise<void>
-    setPlaybackRate: (rate: number) => void
+    setPlaybackRate: (rate: number, showKey?: string | null) => void
     togglePlayback: (audio: RemoteAudio) => void
   }
 }
@@ -826,18 +987,34 @@ function RemotePlayerSurface({
   audio,
   closePlayer,
   isPlayerOpen,
+  onOpenQueue,
+  onSkipToNext,
+  onSkipToPrevious,
   openPlayer,
-  playingBanner,
   remotePlayback,
+  sleepTimerCard,
 }: RemotePlayerSurfaceProps) {
   const media = useMedia()
   const theme = useTheme()
   const wasPlayingBeforeScrubRef = useRef(false)
+  const [isSpeedOpen, setIsSpeedOpen] = useState(false)
   const isActive = remotePlayback.activeAudio?.id === audio.id
   const duration = isActive ? remotePlayback.durationSeconds : null
   const positionSeconds = isActive ? remotePlayback.currentPositionSeconds : 0
   const progress = duration ? Math.min(positionSeconds / duration, 1) : 0
   const isDisabled = remotePlayback.isTransitioning || !isActive
+  const [remoteRetryToken, setRemoteRetryToken] = useState(0)
+  const remoteStalled = useStalled(
+    isActive && (remotePlayback.isTransitioning || remotePlayback.isBuffering),
+    STALL_NOTICE_DELAY_MS,
+    remoteRetryToken,
+  )
+
+  const handleRetryRemotePlayback = () => {
+    impactLight()
+    setRemoteRetryToken((token) => token + 1)
+    remotePlayback.retryPlayback()
+  }
   const artworkSize = media.short ? 220 : media.compact ? 276 : 340
   const imageUrl = getRemoteAudioCoverArtUrl(audio.metadata)
   const error =
@@ -846,6 +1023,7 @@ function RemotePlayerSurface({
       : null
 
   const handleScrubStart = () => {
+    impactLight()
     wasPlayingBeforeScrubRef.current = remotePlayback.isPlaying
 
     if (remotePlayback.isPlaying) {
@@ -861,95 +1039,135 @@ function RemotePlayerSurface({
     wasPlayingBeforeScrubRef.current = false
   }
 
+  // Drag dock-up expands the collapsed remote dock into the sheet.
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization
+  const dockExpandResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_event, gesture) =>
+          !isPlayerOpen &&
+          gesture.dy <= -SWIPE_INTENT_DISTANCE &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx),
+        onPanResponderRelease: (_event, gesture) => {
+          if (
+            gesture.dy <= -DOCK_EXPAND_DISTANCE &&
+            Math.abs(gesture.dy) > Math.abs(gesture.dx)
+          ) {
+            impactLight()
+            openPlayer(audio)
+          }
+        },
+        onPanResponderTerminationRequest: () => true,
+      }),
+    [audio, isPlayerOpen, openPlayer],
+  )
+
   return (
     <>
-      {remotePlayback.activeAudio && (
-        <ThemedView
-          position="absolute"
-          zIndex={50}
-          right={Spacing.one}
-          bottom={BottomTabInset + Spacing.four}
-          left={Spacing.one}
-          maxWidth={Math.min(MaxContentWidth, 720)}
-          height={PlayerDockHeight}
-          alignSelf="center"
-          overflow="hidden"
-          borderWidth={1}
-          borderColor="$borderColor"
-          borderRadius={Radius.large}
-          boxShadow="0 12px 30px rgba(0,0,0,0.28)"
+      {remotePlayback.activeAudio && !isPlayerOpen && (
+        <Animated.View
+          {...dockExpandResponder.panHandlers}
+          style={{
+            position: 'absolute',
+            zIndex: 50,
+            right: Spacing.one,
+            bottom: BottomTabInset + Spacing.four,
+            left: Spacing.one,
+            maxWidth: Math.min(MaxContentWidth, 720),
+            height: PlayerDockHeight,
+            alignSelf: 'center',
+          }}
         >
-          <XStack
+          <ThemedView
             flex={1}
-            alignItems="center"
-            gap={Spacing.two}
-            padding={Spacing.two}
+            overflow="hidden"
+            borderWidth={1}
+            borderColor="$borderColor"
+            borderRadius={Radius.large}
+            boxShadow="0 12px 30px rgba(0,0,0,0.28)"
           >
-            <AppButton
-              tone="ghost"
-              accessibilityLabel={`Open now playing for ${audio.title}`}
-              onPress={() => openPlayer(audio)}
-              minWidth={0}
+            <XStack
               flex={1}
-              justifyContent="flex-start"
-              padding={0}
+              alignItems="center"
+              gap={Spacing.two}
+              padding={Spacing.two}
             >
-              <EpisodeArtwork
-                imageUrl={imageUrl}
-                itemId={`remote-${audio.id}`}
-                name={audio.title}
-                size={54}
+              <AppButton
+                tone="ghost"
+                accessibilityLabel={`Open now playing for ${audio.title}`}
+                accessibilityHint="Drag up to expand the full player"
+                onPress={() => openPlayer(audio)}
+                minWidth={0}
+                flex={1}
+                justifyContent="flex-start"
+                padding={0}
+              >
+                <EpisodeArtwork
+                  imageUrl={imageUrl}
+                  itemId={`remote-${audio.id}`}
+                  name={audio.title}
+                  size={54}
+                  isBuffering={remotePlayback.isTransitioning}
+                />
+                <YStack flex={1} minWidth={0} alignItems="flex-start">
+                  <ThemedText
+                    type="episodeTitle"
+                    numberOfLines={1}
+                    width="100%"
+                    maxFontSizeMultiplier={2}
+                  >
+                    {audio.title}
+                  </ThemedText>
+                  <ThemedText
+                    type="metadata"
+                    themeColor="textSecondary"
+                    numberOfLines={1}
+                    maxFontSizeMultiplier={2}
+                  >
+                    {remotePlayback.isTransitioning
+                      ? 'Loading remote stream…'
+                      : remotePlayback.isPlaying
+                        ? `${formatPlaybackTime(positionSeconds)} · Playing`
+                        : 'Paused'}
+                  </ThemedText>
+                </YStack>
+              </AppButton>
+              <PlayerIconButton
+                accessibilityLabel={remotePlayback.isPlaying ? 'Pause' : 'Play'}
+                disabled={remotePlayback.isTransitioning}
+                icon={remotePlayback.isPlaying ? PAUSE_ICON : PLAY_ICON}
+                isLoading={remotePlayback.isTransitioning}
+                onPress={() => {
+                  impactLight()
+                  remotePlayback.togglePlayback(audio)
+                }}
+                tintColor={theme.accentForeground}
               />
-              <YStack flex={1} minWidth={0} alignItems="flex-start">
-                <ThemedText type="episodeTitle" numberOfLines={1} width="100%">
-                  {audio.title}
-                </ThemedText>
-                <ThemedText
-                  type="metadata"
-                  themeColor="textSecondary"
-                  numberOfLines={1}
-                >
-                  {remotePlayback.isTransitioning
-                    ? 'Loading remote stream…'
-                    : remotePlayback.isPlaying
-                      ? `${formatPlaybackTime(positionSeconds)} · Playing`
-                      : 'Paused'}
-                </ThemedText>
-              </YStack>
-            </AppButton>
-            <PlayerIconButton
-              accessibilityLabel={remotePlayback.isPlaying ? 'Pause' : 'Play'}
-              disabled={remotePlayback.isTransitioning}
-              icon={remotePlayback.isPlaying ? PAUSE_ICON : PLAY_ICON}
-              onPress={() => remotePlayback.togglePlayback(audio)}
-              tintColor={theme.accentForeground}
-            />
-          </XStack>
-          <View
-            position="absolute"
-            right={0}
-            bottom={0}
-            left={0}
-            height={3}
-            backgroundColor="$backgroundSelected"
-          >
+            </XStack>
             <View
-              height="100%"
-              width={`${progress * 100}%`}
-              backgroundColor="$accent"
-            />
-          </View>
-        </ThemedView>
+              position="absolute"
+              right={0}
+              bottom={0}
+              left={0}
+              height={3}
+              backgroundColor="$backgroundSelected"
+            >
+              <View
+                height="100%"
+                width={`${progress * 100}%`}
+                backgroundColor="$accent"
+              />
+            </View>
+          </ThemedView>
+        </Animated.View>
       )}
 
-      <Modal
-        animationType="slide"
-        presentationStyle="fullScreen"
+      <PlayerSheet
         visible={isPlayerOpen}
-        onRequestClose={closePlayer}
-      >
-        <ThemedView flex={1}>
-          <SafeAreaView style={{ flex: 1 }}>
+        onClose={closePlayer}
+        header={
+          <>
             <XStack
               alignItems="center"
               justifyContent="space-between"
@@ -959,6 +1177,7 @@ function RemotePlayerSurface({
               <AppButton
                 tone="icon"
                 accessibilityLabel="Close now playing"
+                accessibilityHint="Collapses the player back to the mini dock"
                 onPress={closePlayer}
               >
                 <SymbolView
@@ -972,234 +1191,238 @@ function RemotePlayerSurface({
                 <ThemedText type="eyebrow" themeColor="accent">
                   Now playing
                 </ThemedText>
-                <ThemedText type="metadata" themeColor="textSecondary">
+                <ThemedText
+                  type="metadata"
+                  themeColor="textSecondary"
+                  maxFontSizeMultiplier={2}
+                >
                   Remote library
                 </ThemedText>
               </YStack>
               <View width={44} />
             </XStack>
 
-            {playingBanner}
-
-            <ScrollView
-              flex={1}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={{
-                alignItems: 'center',
-                paddingBottom: Spacing.four,
-              }}
-            >
-              <YStack
-                width="100%"
-                maxWidth={640}
-                flex={1}
+            <OpenQueueButton onPress={onOpenQueue} />
+          </>
+        }
+        footer={
+          <YStack gap={Spacing.two}>
+            {remoteStalled && (
+              <StallNotice onRetry={handleRetryRemotePlayback} />
+            )}
+            <AudioPlaybackSlider
+              accessibilityLabel={`${audio.title} playback position`}
+              // expo-audio exposes `isBuffering` but no buffered position:
+              // null hides the buffered layer instead of faking it.
+              bufferedSeconds={null}
+              disabled={isDisabled || duration === null}
+              durationSeconds={duration}
+              onScrubEnd={handleScrubEnd}
+              onScrubStart={handleScrubStart}
+              onSeekTo={remotePlayback.seekTo}
+              positionSeconds={positionSeconds}
+            />
+            {error ? (
+              <XStack
+                accessibilityLiveRegion="polite"
+                accessibilityRole="alert"
                 alignItems="center"
-                gap={media.short ? Spacing.three : Spacing.four}
-                paddingHorizontal={Spacing.four}
-                paddingTop={media.short ? Spacing.one : Spacing.three}
+                justifyContent="space-between"
+                gap={Spacing.two}
+                width="100%"
               >
-                <ThemedView
-                  type="backgroundElement"
-                  padding={Spacing.three}
-                  borderRadius={Radius.large}
-                  borderWidth={1}
-                  borderColor="$borderColor"
-                  boxShadow="0 22px 50px rgba(0,0,0,0.28)"
+                <ThemedText
+                  type="metadata"
+                  color="$danger"
+                  flex={1}
+                  flexShrink={1}
                 >
-                  <EpisodeArtwork
-                    imageUrl={imageUrl}
-                    itemId={`remote-${audio.id}`}
-                    name={audio.title}
-                    size={artworkSize}
-                  />
-                </ThemedView>
-
-                <YStack width="100%" alignItems="center" gap={Spacing.one}>
-                  <ThemedText
-                    type="heading"
-                    textAlign="center"
-                    numberOfLines={3}
-                    $compact={{ fontSize: 22, lineHeight: 28 }}
-                  >
-                    {audio.title}
-                  </ThemedText>
-                  <ThemedText type="default" themeColor="textSecondary">
-                    {remotePlayback.isUsingCachedSource
-                      ? 'Cached audio · Available offline'
-                      : 'Remote stream · Caching for offline playback'}
-                  </ThemedText>
-                  <XStack
-                    alignItems="center"
-                    gap={Spacing.one}
-                    marginTop={Spacing.one}
-                  >
-                    <View
-                      width={7}
-                      height={7}
-                      borderRadius={7}
-                      backgroundColor="$accent"
-                    />
-                    <ThemedText type="metadata" themeColor="textSecondary">
-                      Streaming
-                    </ThemedText>
-                  </XStack>
-                </YStack>
-
-                <YStack width="100%" gap={Spacing.two}>
-                  <AudioPlaybackSlider
-                    accessibilityLabel={`${audio.title} playback position`}
-                    bufferedSeconds={duration}
-                    disabled={isDisabled || duration === null}
-                    durationSeconds={duration}
-                    onScrubEnd={handleScrubEnd}
-                    onScrubStart={handleScrubStart}
-                    onSeekTo={remotePlayback.seekTo}
-                    positionSeconds={positionSeconds}
-                  />
-                  {error ? (
-                    <ThemedText
-                      type="metadata"
-                      color="$danger"
-                      textAlign="center"
-                    >
-                      {error}
-                    </ThemedText>
-                  ) : null}
-                </YStack>
-
-                <XStack
-                  width="100%"
-                  alignItems="center"
-                  justifyContent="space-around"
-                >
-                  <TransportButton
-                    accessibilityLabel="Rewind 15 seconds"
-                    disabled={isDisabled}
-                    label="15"
-                    icon={REWIND_ICON}
-                    onPress={() => remotePlayback.seekBy(-15)}
-                    tintColor={theme.text}
-                  />
-                  <PlayerIconButton
-                    large
-                    accessibilityLabel={
-                      remotePlayback.isPlaying ? 'Pause' : 'Play'
-                    }
-                    disabled={remotePlayback.isTransitioning}
-                    icon={remotePlayback.isPlaying ? PAUSE_ICON : PLAY_ICON}
-                    onPress={() => remotePlayback.togglePlayback(audio)}
-                    tintColor={theme.accentForeground}
-                  />
-                  <TransportButton
-                    accessibilityLabel="Forward 15 seconds"
-                    disabled={isDisabled}
-                    label="15"
-                    icon={FORWARD_ICON}
-                    onPress={() => remotePlayback.seekBy(15)}
-                    tintColor={theme.text}
-                  />
-                </XStack>
-
+                  {error}
+                </ThemedText>
                 <AppButton
                   tone="secondary"
-                  accessibilityLabel={`Playback speed ${remotePlayback.playbackRate} times`}
-                  onPress={() =>
-                    remotePlayback.setPlaybackRate(
-                      nextPlaybackRate(remotePlayback.playbackRate),
-                    )
-                  }
+                  accessibilityLabel={`Retry ${audio.title}`}
+                  accessibilityHint="Restarts loading the current episode"
+                  onPress={handleRetryRemotePlayback}
+                  minHeight={44}
+                  flexShrink={0}
                 >
-                  <ThemedText type="smallBold">
-                    {remotePlayback.playbackRate}× speed
-                  </ThemedText>
+                  <ThemedText type="smallBold">Retry</ThemedText>
                 </AppButton>
-              </YStack>
-            </ScrollView>
-          </SafeAreaView>
-        </ThemedView>
-      </Modal>
-    </>
-  )
-}
+              </XStack>
+            ) : null}
 
-type CurrentlyPlayingBannerProps = {
-  disabled: boolean
-  imageUrl?: string | null
-  itemId: string
-  name: string
-  onOpen: () => void
-  onToggle: () => void
-  tintColor: string
-  title: string
-}
-
-function CurrentlyPlayingBanner({
-  disabled,
-  imageUrl,
-  itemId,
-  name,
-  onOpen,
-  onToggle,
-  tintColor,
-  title,
-}: CurrentlyPlayingBannerProps) {
-  return (
-    <ThemedView
-      type="accent"
-      marginHorizontal={Spacing.one}
-      marginBottom={Spacing.two}
-      padding={Spacing.two}
-      borderWidth={1}
-      borderColor="$accentForeground"
-      borderRadius={Radius.large}
-      boxShadow="0 10px 24px rgba(0,0,0,0.28)"
-    >
-      <XStack alignItems="center" gap={Spacing.two}>
-        <AppButton
-          tone="ghost"
-          accessibilityLabel={`Open now playing for ${title}`}
-          onPress={onOpen}
-          minWidth={0}
-          flex={1}
-          justifyContent="flex-start"
-          padding={0}
-        >
-          <EpisodeArtwork
-            imageUrl={imageUrl}
-            itemId={itemId}
-            name={name}
-            size={42}
-          />
-          <YStack flex={1} minWidth={0} alignItems="flex-start">
-            <ThemedText type="metadata" color="$accentForeground">
-              Now playing
-            </ThemedText>
-            <ThemedText
-              type="smallBold"
-              color="$accentForeground"
-              numberOfLines={1}
+            <XStack
               width="100%"
+              alignItems="center"
+              justifyContent="space-around"
             >
-              {title}
-            </ThemedText>
+              <SkipButton
+                accessibilityLabel="Previous episode"
+                disabled={isDisabled}
+                icon={PREV_ICON}
+                onPress={() => {
+                  impactLight()
+                  onSkipToPrevious()
+                }}
+                tintColor={theme.text}
+              />
+              <TransportButton
+                accessibilityLabel="Rewind 15 seconds"
+                accessibilityHint={
+                  (duration ?? 0) > 3_600
+                    ? 'Long-press to rewind 60 seconds on this long episode'
+                    : 'Long-press to rewind 30 seconds'
+                }
+                disabled={isDisabled}
+                label="15"
+                icon={REWIND_ICON}
+                onPress={() => {
+                  impactLight()
+                  remotePlayback.seekBy(-15)
+                }}
+                onLongPress={() => {
+                  impactLight()
+                  remotePlayback.seekBy(-getLongPressSeekSeconds(duration))
+                }}
+                tintColor={theme.text}
+              />
+              <PlayerIconButton
+                large
+                accessibilityLabel={remotePlayback.isPlaying ? 'Pause' : 'Play'}
+                disabled={remotePlayback.isTransitioning}
+                icon={remotePlayback.isPlaying ? PAUSE_ICON : PLAY_ICON}
+                isLoading={isActive && remotePlayback.isTransitioning}
+                onPress={() => {
+                  impactLight()
+                  remotePlayback.togglePlayback(audio)
+                }}
+                tintColor={theme.accentForeground}
+              />
+              <TransportButton
+                accessibilityLabel="Forward 15 seconds"
+                accessibilityHint={
+                  (duration ?? 0) > 3_600
+                    ? 'Long-press to jump forward 60 seconds on this long episode'
+                    : 'Long-press to jump forward 30 seconds'
+                }
+                disabled={isDisabled}
+                label="15"
+                icon={FORWARD_ICON}
+                onPress={() => {
+                  impactLight()
+                  remotePlayback.seekBy(15)
+                }}
+                onLongPress={() => {
+                  impactLight()
+                  remotePlayback.seekBy(getLongPressSeekSeconds(duration))
+                }}
+                tintColor={theme.text}
+              />
+              <SkipButton
+                accessibilityLabel="Next episode"
+                disabled={isDisabled}
+                icon={NEXT_ICON}
+                onPress={() => {
+                  impactLight()
+                  onSkipToNext()
+                }}
+                tintColor={theme.text}
+              />
+            </XStack>
+            <LongPressHint visible={(duration ?? 0) > 3_600} />
+
+            <AppButton
+              tone="secondary"
+              accessibilityLabel={`Playback speed ${remotePlayback.playbackRate} times`}
+              accessibilityHint="Opens speed options from half to triple speed"
+              onPress={() => setIsSpeedOpen(true)}
+            >
+              <ThemedText type="smallBold">
+                {remotePlayback.playbackRate}× speed
+              </ThemedText>
+            </AppButton>
           </YStack>
-        </AppButton>
-        <AppButton
-          tone="icon"
-          accessibilityLabel="Pause current audio"
-          disabled={disabled}
-          onPress={onToggle}
-          backgroundColor="$accentForeground"
+        }
+      >
+        <YStack
+          width="100%"
+          maxWidth={640}
+          flex={1}
+          alignItems="center"
+          gap={media.short ? Spacing.three : Spacing.four}
+          paddingHorizontal={Spacing.four}
+          paddingTop={media.short ? Spacing.one : Spacing.three}
         >
-          <SymbolView
-            name={PAUSE_ICON}
-            size={23}
-            tintColor={tintColor}
-            weight="bold"
-          />
-        </AppButton>
-      </XStack>
-    </ThemedView>
+          <SwipeableArtwork
+            disabled={isDisabled}
+            itemTitle={audio.title}
+            onSwipeLeft={() => onSkipToNext()}
+            onSwipeRight={() => onSkipToPrevious()}
+          >
+            <ThemedView
+              type="backgroundElement"
+              padding={Spacing.three}
+              borderRadius={Radius.large}
+              borderWidth={1}
+              borderColor="$borderColor"
+              boxShadow="0 22px 50px rgba(0,0,0,0.28)"
+            >
+              <EpisodeArtwork
+                imageUrl={imageUrl}
+                itemId={`remote-${audio.id}`}
+                name={audio.title}
+                size={artworkSize}
+                isBuffering={isActive && remotePlayback.isTransitioning}
+              />
+            </ThemedView>
+          </SwipeableArtwork>
+
+          <YStack width="100%" alignItems="center" gap={Spacing.one}>
+            <ThemedText
+              type="heading"
+              textAlign="center"
+              numberOfLines={3}
+              $compact={{ fontSize: 22, lineHeight: 28 }}
+            >
+              {audio.title}
+            </ThemedText>
+            <ThemedText type="default" themeColor="textSecondary">
+              {remotePlayback.isUsingCachedSource
+                ? 'Cached audio · Available offline'
+                : 'Remote stream · Caching for offline playback'}
+            </ThemedText>
+            <XStack
+              alignItems="center"
+              gap={Spacing.one}
+              marginTop={Spacing.one}
+            >
+              <View
+                width={7}
+                height={7}
+                borderRadius={7}
+                backgroundColor="$accent"
+              />
+              <ThemedText type="metadata" themeColor="textSecondary">
+                Streaming
+              </ThemedText>
+            </XStack>
+          </YStack>
+
+          {sleepTimerCard}
+        </YStack>
+      </PlayerSheet>
+      {isSpeedOpen && (
+        <SpeedSheet
+          currentRate={remotePlayback.playbackRate}
+          onClose={() => setIsSpeedOpen(false)}
+          onSelect={(rate) => {
+            remotePlayback.setPlaybackRate(rate, getShowKey(audio.metadata))
+            setIsSpeedOpen(false)
+          }}
+        />
+      )}
+    </>
   )
 }
 
@@ -1208,15 +1431,17 @@ type PlayerIconButtonProps = {
   disabled: boolean
   icon: SymbolViewProps['name']
   large?: boolean
+  isLoading?: boolean
   onPress: () => void
   tintColor: string
 }
 
-function PlayerIconButton({
+const PlayerIconButton = memo(function PlayerIconButton({
   accessibilityLabel,
   disabled,
   icon,
   large = false,
+  isLoading = false,
   onPress,
   tintColor,
 }: PlayerIconButtonProps) {
@@ -1224,31 +1449,155 @@ function PlayerIconButton({
     <AppButton
       tone={large ? 'player' : 'icon'}
       accessibilityLabel={accessibilityLabel}
-      disabled={disabled}
+      accessibilityState={{ busy: isLoading, disabled: disabled || isLoading }}
+      disabled={disabled || isLoading}
       onPress={onPress}
       backgroundColor="$accent"
     >
+      {isLoading ? (
+        <Spinner
+          size="small"
+          color="$accentForeground"
+          accessibilityLabel="Loading audio"
+        />
+      ) : (
+        <SymbolView
+          name={icon}
+          size={large ? 32 : 23}
+          tintColor={tintColor}
+          weight="bold"
+        />
+      )}
+    </AppButton>
+  )
+})
+
+/**
+ * Stall notice pinned above the transport when a load or buffer never
+ * resolves within ~8s. Retry restarts the current load through the same
+ * path toggle-playback uses after an error.
+ */
+const StallNotice = memo(function StallNotice({
+  onRetry,
+}: {
+  onRetry: () => void
+}) {
+  return (
+    <XStack
+      accessibilityRole="alert"
+      alignItems="center"
+      justifyContent="space-between"
+      gap={Spacing.two}
+      width="100%"
+      paddingVertical={Spacing.two}
+      paddingLeft={Spacing.three}
+      paddingRight={Spacing.two}
+      borderWidth={1}
+      borderColor="$warning"
+      borderRadius={Radius.medium}
+      backgroundColor="$backgroundSelected"
+    >
+      <ThemedText type="smallBold" flex={1} flexShrink={1}>
+        Stalled — Check connection
+      </ThemedText>
+      <AppButton
+        tone="secondary"
+        accessibilityLabel="Retry playback"
+        accessibilityHint="Restarts loading the current episode"
+        onPress={onRetry}
+        minHeight={44}
+      >
+        <ThemedText type="smallBold">Retry</ThemedText>
+      </AppButton>
+    </XStack>
+  )
+})
+
+/**
+ * 44×44 Prev/Next queue control (`tone="icon"` is 44×44). TalkBack/VoiceOver
+ * announce "Previous episode" / "Next episode" via `accessibilityLabel`.
+ */
+const SkipButton = memo(function SkipButton(props: PlayerIconButtonProps) {
+  return (
+    <AppButton
+      tone="icon"
+      accessibilityLabel={props.accessibilityLabel}
+      disabled={props.disabled}
+      onPress={props.onPress}
+    >
       <SymbolView
-        name={icon}
-        size={large ? 32 : 23}
-        tintColor={tintColor}
-        weight="bold"
+        name={props.icon}
+        size={28}
+        tintColor={props.tintColor}
+        weight="semibold"
       />
     </AppButton>
   )
-}
+})
 
-function TransportButton({
+/**
+ * Opens the queue sheet from inside the full-player Modal, replacing the
+ * old inline now-playing banner.
+ */
+const OpenQueueButton = memo(function OpenQueueButton({
+  onPress,
+}: {
+  onPress: () => void
+}) {
+  const theme = useTheme()
+
+  return (
+    <View
+      paddingHorizontal={Spacing.three}
+      paddingBottom={Spacing.two}
+      alignItems="center"
+    >
+      <AppButton
+        tone="outlined"
+        accessibilityLabel="Open queue"
+        accessibilityHint="Shows what is playing and what plays next"
+        onPress={onPress}
+        minHeight={44}
+      >
+        <SymbolView
+          name={QUEUE_ICON}
+          size={20}
+          tintColor={theme.text}
+          weight="semibold"
+        />
+        <ThemedText type="smallBold">Open queue</ThemedText>
+      </AppButton>
+    </View>
+  )
+})
+
+/**
+ * ±15s transport with long-press acceleration: a long-press jumps ±60s on
+ * long-form episodes (> 60 min) where 15s steps feel slow. `formatPlaybackTime`
+ * already keeps `h:mm:ss` for those files, so the time labels stay honest.
+ */
+const TransportButton = memo(function TransportButton({
   label,
+  onLongPress,
+  accessibilityHint,
   ...props
-}: PlayerIconButtonProps & { label: string }) {
+}: PlayerIconButtonProps & {
+  label: string
+  onLongPress?: () => void
+  accessibilityHint?: string
+}) {
   return (
     <YStack alignItems="center" gap={Spacing.one}>
       <AppButton
         tone="icon"
         accessibilityLabel={props.accessibilityLabel}
+        accessibilityHint={
+          accessibilityHint ??
+          'Long-press to jump 60 seconds on episodes over an hour'
+        }
         disabled={props.disabled}
         onPress={props.onPress}
+        onLongPress={onLongPress}
       >
         <SymbolView
           name={props.icon}
@@ -1262,29 +1611,47 @@ function TransportButton({
       </ThemedText>
     </YStack>
   )
-}
+})
 
-function nextPlaybackRate(currentRate: number): number {
-  const currentIndex = PLAYBACK_RATES.findIndex((rate) => rate === currentRate)
-  return PLAYBACK_RATES[(currentIndex + 1) % PLAYBACK_RATES.length]
-}
-
-function formatSleepTimerRemaining(remainingMs: number): string {
-  if (remainingMs > 60 * ONE_MINUTE_MS) {
-    return `${Math.floor(remainingMs / (60 * ONE_MINUTE_MS))}h left`
+const LongPressHint = memo(function LongPressHint({
+  visible,
+}: {
+  visible: boolean
+}) {
+  if (!visible) {
+    return null
   }
 
-  return `${Math.max(1, Math.ceil(remainingMs / ONE_MINUTE_MS))}m left`
+  return (
+    <ThemedText
+      type="metadata"
+      themeColor="textSecondary"
+      textAlign="center"
+      maxFontSizeMultiplier={2}
+    >
+      Tip: long-press −15s / +15s to jump ∓60s on long episodes
+    </ThemedText>
+  )
+})
+
+/** Long-press jumps a full minute on long-form audio, 30s otherwise. */
+function getLongPressSeekSeconds(durationSeconds: number | null): number {
+  return durationSeconds !== null && durationSeconds > 3_600 ? 60 : 30
 }
 
 function getRemoteAudioCoverArtUrl(metadata: unknown): string | null {
-  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
+  if (
+    typeof metadata !== 'object' ||
+    metadata === null ||
+    Array.isArray(metadata)
+  ) {
     return null
   }
 
   const coverArtUrl = (metadata as Record<string, unknown>).coverArtUrl
 
-  return typeof coverArtUrl === 'string' && /^https:\/\//i.test(coverArtUrl.trim())
+  return typeof coverArtUrl === 'string' &&
+    /^https:\/\//i.test(coverArtUrl.trim())
     ? coverArtUrl.trim()
     : null
 }
@@ -1304,15 +1671,15 @@ const CLOSE_ICON: SymbolViewProps['name'] = {
   android: 'keyboard_arrow_down',
   web: 'keyboard_arrow_down',
 }
-const SLEEP_ICON: SymbolViewProps['name'] = {
-  ios: 'moon.zzz.fill',
-  android: 'bedtime',
-  web: 'bedtime',
-}
-const CLEAR_TIMER_ICON: SymbolViewProps['name'] = {
+const DOCK_STOP_ICON: SymbolViewProps['name'] = {
   ios: 'xmark',
   android: 'close',
   web: 'close',
+}
+const QUEUE_ICON: SymbolViewProps['name'] = {
+  ios: 'list.bullet',
+  android: 'list',
+  web: 'list',
 }
 const REWIND_ICON: SymbolViewProps['name'] = {
   ios: 'gobackward.15',
@@ -1323,4 +1690,14 @@ const FORWARD_ICON: SymbolViewProps['name'] = {
   ios: 'goforward.15',
   android: 'forward_10',
   web: 'forward_10',
+}
+const PREV_ICON: SymbolViewProps['name'] = {
+  ios: 'backward.end.fill',
+  android: 'skip_previous',
+  web: 'skip_previous',
+}
+const NEXT_ICON: SymbolViewProps['name'] = {
+  ios: 'forward.end.fill',
+  android: 'skip_next',
+  web: 'skip_next',
 }

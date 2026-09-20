@@ -1,6 +1,6 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
 import { Image } from 'expo-image'
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { Spinner, View, XStack, YStack } from 'tamagui'
 
 import { ThemedText } from '@/components/themed-text'
@@ -29,7 +29,7 @@ type RemoteAudioRowProps = {
   onAddToPlaylist?: (audio: RemoteAudio) => void
 }
 
-export function RemoteAudioRow({
+export const RemoteAudioRow = memo(function RemoteAudioRow({
   audio,
   isCached,
   downloadState,
@@ -147,7 +147,12 @@ export function RemoteAudioRow({
               ) : null}
             </XStack>
             {playbackError ? (
-              <ThemedText type="metadata" color="$danger">
+              <ThemedText
+                type="metadata"
+                color="$danger"
+                accessibilityLiveRegion="polite"
+                accessibilityRole="alert"
+              >
                 {playbackError}
               </ThemedText>
             ) : null}
@@ -231,7 +236,7 @@ export function RemoteAudioRow({
       </XStack>
     </ThemedView>
   )
-}
+})
 
 const REMOTE_ICON: SymbolViewProps['name'] = {
   ios: 'cloud.fill',

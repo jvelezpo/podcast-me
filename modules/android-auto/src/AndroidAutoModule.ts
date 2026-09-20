@@ -41,6 +41,7 @@ declare class AndroidAutoNativeModule extends NativeModule<AndroidAutoEvents> {
   pausePlayback(): Promise<boolean>;
   seekTo(positionSeconds: number): Promise<boolean>;
   setPlaybackRate(rate: number): Promise<boolean>;
+  setVolume(volume: number): Promise<boolean>;
   dismissPlayback(): Promise<boolean>;
   stopPlayback(): void;
 }
@@ -122,6 +123,19 @@ export async function setAndroidAutoPlaybackRate(
   rate: number,
 ): Promise<boolean> {
   return (await nativeModule?.setPlaybackRate(rate)) ?? false;
+}
+
+/**
+ * Volume for the shared car/phone ExoPlayer (sleep fade-out). Best-effort:
+ * resolves false when the service is unavailable or the build predates the
+ * native function, so callers must never treat it as fatal.
+ */
+export async function setAndroidAutoVolume(volume: number): Promise<boolean> {
+  try {
+    return (await nativeModule?.setVolume(volume)) ?? false;
+  } catch {
+    return false;
+  }
 }
 
 export async function dismissAndroidAutoPlayback(): Promise<boolean> {

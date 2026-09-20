@@ -1,5 +1,5 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Animated,
   KeyboardAvoidingView,
@@ -18,6 +18,7 @@ import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
 import { AppButton } from '@/components/ui/app-button'
 import { Radius, Spacing } from '@/constants/theme'
+import { useReducedMotion } from '@/hooks/use-reduced-motion'
 import type { AudioPlaybackError } from '@/hooks/use-audio-library-player'
 import { useTheme } from '@/hooks/use-theme'
 import type { AudioMetadata } from '@/models/audio-item'
@@ -49,6 +50,7 @@ type AudioLibraryRowProps = {
   uploadError: string | null
   onDelete: (item: LoadedAudioItem) => void
   onOpenPlayer: (item: LoadedAudioItem) => void
+  onPlayNext: (item: LoadedAudioItem) => void
   onReorder: (itemId: string, offset: number) => void
   onSaveMetadata: (
     itemId: string,
@@ -59,7 +61,7 @@ type AudioLibraryRowProps = {
   onAddToPlaylist?: (item: LoadedAudioItem) => void
 }
 
-export function AudioLibraryRow({
+export const AudioLibraryRow = memo(function AudioLibraryRow({
   item,
   isActive,
   isPlaying,
@@ -79,6 +81,7 @@ export function AudioLibraryRow({
   uploadError,
   onDelete,
   onOpenPlayer,
+  onPlayNext,
   onReorder,
   onSaveMetadata,
   onTogglePlayback,
@@ -89,8 +92,11 @@ export function AudioLibraryRow({
   const [dragY] = useState(() => new Animated.Value(0))
   const [highlightProgress] = useState(() => new Animated.Value(0))
   const [isDragging, setIsDragging] = useState(false)
+  const reduceMotion = useReducedMotion()
+  const reduceMotionRef = useRef(reduceMotion)
+  reduceMotionRef.current = reduceMotion
   const [isMetadataModalOpen, setIsMetadataModalOpen] = useState(false)
-  const [showActions, setShowActions] = useState(false)
+  const [isSheetOpen, setIsSheetOpen] = useState(false)
   const dragDisabledRef = useRef(isReorderDisabled)
   const itemIdRef = useRef(item.id)
   const onReorderRef = useRef(onReorder)
@@ -103,6 +109,13 @@ export function AudioLibraryRow({
 
   useEffect(() => {
     if (duplicateHighlightToken === 0) {
+      return
+    }
+
+    // Reduced motion skips the duplicate flash; the row still scrolls into
+    // view and VoiceOver still announces it.
+    if (reduceMotion) {
+      highlightProgress.setValue(0)
       return
     }
 
@@ -133,7 +146,7 @@ export function AudioLibraryRow({
     animation.start()
 
     return () => animation.stop()
-  }, [duplicateHighlightToken, highlightProgress])
+  }, [duplicateHighlightToken, highlightProgress, reduceMotion])
 
   const reorderResponder = useMemo(() => {
     const canDrag = () => !dragDisabledRef.current
@@ -144,6 +157,11 @@ export function AudioLibraryRow({
       if (offset !== 0) {
         dragY.setValue(0)
         onReorderRef.current(itemIdRef.current, offset)
+        return
+      }
+
+      if (reduceMotionRef.current) {
+        dragY.setValue(0)
         return
       }
 
@@ -251,9 +269,6 @@ export function AudioLibraryRow({
       >
         <XStack alignItems="center" gap={Spacing.three} padding={Spacing.three}>
           <View
-            position="absolute"
-            top={8}
-            right={8}
             {...reorderResponder.panHandlers}
             accessible
             accessibilityActions={[
@@ -265,13 +280,13 @@ export function AudioLibraryRow({
             accessibilityRole="adjustable"
             accessibilityState={{ disabled: isReorderDisabled }}
             onAccessibilityAction={handleReorderAccessibilityAction}
-            minHeight={30}
-            minWidth={40}
-            flex={1}
-            flexDirection="row"
+            width={44}
+            minWidth={44}
+            height={44}
+            minHeight={44}
+            flexShrink={0}
             alignItems="center"
             justifyContent="center"
-            gap={Spacing.two}
             borderWidth={1}
             borderRadius={Radius.round}
             borderColor="$borderColor"
@@ -279,7 +294,7 @@ export function AudioLibraryRow({
             opacity={isReorderDisabled ? 0.45 : 1}
             cursor={isReorderDisabled ? 'not-allowed' : 'grab'}
           >
-            <SymbolView name={REORDER_ICON} size={18} tintColor={theme.text} />
+            <SymbolView name={REORDER_ICON} size={20} tintColor={theme.text} />
           </View>
           <AppButton
             tone="ghost"
@@ -378,7 +393,7 @@ export function AudioLibraryRow({
             </YStack>
           </AppButton>
 
-          <YStack flexShrink={0} alignItems="center" gap={Spacing.two} pt={30}>
+          <YStack flexShrink={0} alignItems="center" gap={Spacing.two}>
             <ThemedText type="metadata" themeColor="textSecondary">
               {formatPlaybackTime(durationSeconds)}
             </ThemedText>
@@ -419,10 +434,9 @@ export function AudioLibraryRow({
               />
             </AppButton>
             <AppButton
-              tone="ghost"
-              minHeight={32}
-              accessibilityLabel={`${showActions ? 'Hide' : 'Show'} options for ${title}`}
-              onPress={() => setShowActions((visible) => !visible)}
+              tone="icon"
+              accessibilityLabel={`Options for ${title}`}
+              onPress={() => setIsSheetOpen(true)}
             >
               <SymbolView
                 name={MORE_ICON}
@@ -450,7 +464,12 @@ export function AudioLibraryRow({
             paddingBottom={Spacing.three}
           >
             {itemError && (
-              <ThemedText type="metadata" color="$danger">
+              <ThemedText
+                type="metadata"
+                color="$danger"
+                accessibilityLiveRegion="polite"
+                accessibilityRole="alert"
+              >
                 {itemError}
               </ThemedText>
             )}
@@ -464,67 +483,50 @@ export function AudioLibraryRow({
           </YStack>
         )}
 
-        {showActions && (
-          <XStack
-            gap={Spacing.two}
-            paddingHorizontal={Spacing.three}
-            paddingBottom={Spacing.three}
-            flexWrap="wrap"
-          >
-            {onAddToPlaylist && (
-              <AppButton
-                tone="outlined"
-                accessibilityLabel={`Add ${title} to playlist`}
-                onPress={() => onAddToPlaylist(item)}
-                flex={1}
-                mt={5}
-              >
-                <SymbolView
-                  name={PLAYLIST_ICON}
-                  size={17}
-                  tintColor={theme.text}
-                />
-                <ThemedText type="smallBold">Playlist</ThemedText>
-              </AppButton>
-            )}
-            <AppButton
-              tone="outlined"
-              accessibilityLabel={`Edit metadata for ${title}`}
-              accessibilityState={{ disabled: isMetadataDisabled }}
-              disabled={isMetadataDisabled}
-              onPress={() => setIsMetadataModalOpen(true)}
-              flex={1}
-              mt={5}
-            >
-              <SymbolView
-                name={EDIT_ICON}
-                size={17}
-                tintColor={theme.text}
-              />
-              <ThemedText type="smallBold">Edit metadata</ThemedText>
-            </AppButton>
-            <AppButton
-              tone="danger"
-              accessibilityLabel={`Remove ${title}`}
-              accessibilityState={{ disabled: isDeleteDisabled }}
-              disabled={isDeleteDisabled}
-              onPress={() => onDelete(item)}
-              flex={1}
-              mt={5}
-            >
-              <SymbolView
-                name={DELETE_ICON}
-                size={17}
-                tintColor={theme.danger}
-              />
-              <ThemedText type="smallBold" color="$danger">
-                Remove
-              </ThemedText>
-            </AppButton>
-          </XStack>
-        )}
       </ThemedView>
       </AnimatedView>
+
+      {isSheetOpen && (
+        <RowActionSheet
+          title={title}
+          onClose={() => setIsSheetOpen(false)}
+          actions={[
+            {
+              key: 'play-next',
+              label: isActive ? 'Playing now' : 'Play next',
+              icon: PLAY_NEXT_ICON,
+              disabled: isActive,
+              onPress: () => onPlayNext(item),
+            },
+            ...(onAddToPlaylist
+              ? [
+                  {
+                    key: 'add-to-playlist',
+                    label: 'Add to playlist',
+                    icon: PLAYLIST_ICON,
+                    disabled: false,
+                    onPress: () => onAddToPlaylist(item),
+                  },
+                ]
+              : []),
+            {
+              key: 'edit-metadata',
+              label: 'Edit metadata',
+              icon: EDIT_ICON,
+              disabled: isMetadataDisabled,
+              onPress: () => setIsMetadataModalOpen(true),
+            },
+            {
+              key: 'remove',
+              label: 'Remove',
+              icon: DELETE_ICON,
+              disabled: isDeleteDisabled,
+              destructive: true,
+              onPress: () => onDelete(item),
+            },
+          ]}
+        />
+      )}
 
       {isMetadataModalOpen && (
         <AudioMetadataModal
@@ -534,6 +536,104 @@ export function AudioLibraryRow({
         />
       )}
     </>
+  )
+})
+
+type RowAction = {
+  key: string
+  label: string
+  icon: SymbolViewProps['name']
+  disabled: boolean
+  destructive?: boolean
+  onPress: () => void
+}
+
+type RowActionSheetProps = {
+  title: string
+  actions: RowAction[]
+  onClose: () => void
+}
+
+/**
+ * Bottom action sheet for a single row. Row height stays stable because
+ * actions live in the sheet instead of an expanding inline section.
+ */
+function RowActionSheet({ title, actions, onClose }: RowActionSheetProps) {
+  const theme = useTheme()
+
+  return (
+    <Modal
+      animationType="slide"
+      presentationStyle="pageSheet"
+      visible
+      onRequestClose={onClose}
+    >
+      <ThemedView flex={1}>
+        <SafeAreaView style={styles.safeArea}>
+          <YStack
+            width="100%"
+            maxWidth={640}
+            alignSelf="center"
+            gap={Spacing.two}
+            paddingHorizontal={Spacing.three}
+            paddingTop={Spacing.three}
+            paddingBottom={Spacing.five}
+          >
+            <XStack alignItems="center" justifyContent="space-between">
+              <ThemedText
+                type="smallBold"
+                numberOfLines={1}
+                flex={1}
+                minWidth={0}
+              >
+                {title}
+              </ThemedText>
+              <AppButton
+                tone="icon"
+                accessibilityLabel="Close options"
+                onPress={onClose}
+              >
+                <SymbolView
+                  name={CLOSE_ICON}
+                  size={18}
+                  tintColor={theme.textSecondary}
+                />
+              </AppButton>
+            </XStack>
+            {actions.map((action) => (
+              <AppButton
+                key={action.key}
+                tone="ghost"
+                accessibilityLabel={action.label}
+                accessibilityState={{ disabled: action.disabled }}
+                disabled={action.disabled}
+                onPress={() => {
+                  onClose()
+                  action.onPress()
+                }}
+                minHeight={52}
+                justifyContent="flex-start"
+                paddingHorizontal={Spacing.two}
+              >
+                <SymbolView
+                  name={action.icon}
+                  size={20}
+                  tintColor={
+                    action.destructive ? theme.danger : theme.text
+                  }
+                />
+                <ThemedText
+                  type="default"
+                  color={action.destructive ? '$danger' : undefined}
+                >
+                  {action.label}
+                </ThemedText>
+              </AppButton>
+            ))}
+          </YStack>
+        </SafeAreaView>
+      </ThemedView>
+    </Modal>
   )
 }
 
@@ -811,6 +911,16 @@ const MORE_ICON: SymbolViewProps['name'] = {
   ios: 'ellipsis',
   android: 'more_horiz',
   web: 'more_horiz',
+}
+const PLAY_NEXT_ICON: SymbolViewProps['name'] = {
+  ios: 'text.line.first.and.arrowtriangle.forward',
+  android: 'queue_play_next',
+  web: 'queue_play_next',
+}
+const CLOSE_ICON: SymbolViewProps['name'] = {
+  ios: 'xmark',
+  android: 'close',
+  web: 'close',
 }
 const REORDER_ICON: SymbolViewProps['name'] = {
   ios: 'line.3.horizontal',

@@ -44,12 +44,19 @@ import {
   clearRemoteAudioFileCache,
   getCachedRemoteAudioSource,
   recordRemoteAudioPlayback,
+  subscribeToRemoteAudioFileCache,
 } from '@/services/remote-audio-file-cache'
 import {
   type RemoteAudioUploadProgress,
   type UploadableAudioAsset,
   uploadPickedAudioAsset,
 } from '@/services/remote-audio-upload'
+import {
+  buildAndroidAutoRemoteCatalogEntries,
+  clearRegisteredRemoteAudios,
+  registerRemoteAudiosForCar,
+} from '@/services/android-auto-remote-sync'
+import { setAndroidAutoRemoteCatalogSnapshot } from '@/services/android-auto-remote-catalog'
 
 type AuthContextValue = {
   isRestoring: boolean
@@ -98,6 +105,63 @@ export function AuthProvider({ children }: PropsWithChildren) {
     refreshToken: string
     promise: Promise<Session>
   } | null>(null)
+  const sessionRef = useRef<Session | null>(null)
+  const lastRemoteAudiosRef = useRef<readonly RemoteAudio[]>([])
+  const hasLoadedRemoteAudiosRef = useRef(false)
+  const previousAccessTokenRef = useRef<string | null>(null)
+  const hadSessionRef = useRef(false)
+
+  /**
+   * Pushes freshly resolved remote sources to the Android Auto snapshot.
+   * The car plays from that snapshot while the phone is locked, so every
+   * push must resolve sources with the current token (and prefer freshly
+   * cached files, which need no credentials at all).
+   */
+  const pushRemoteCatalogToCar = useCallback(
+    async (
+      audios: readonly RemoteAudio[],
+      userId: string,
+      accessToken: string,
+    ): Promise<void> => {
+      // The registry lets the Android remote hook resolve car-initiated
+      // `remote:<id>` playback back to full audios on every platform.
+      registerRemoteAudiosForCar(audios)
+
+      if (Platform.OS !== 'android') {
+        return
+      }
+
+      const resolved = (
+        await Promise.all(
+          audios.map(async (audio) => {
+            try {
+              const cached = await getCachedRemoteAudioSource(
+                userId,
+                audio.id,
+              ).catch(() => null)
+              const source =
+                cached ??
+                buildRemoteAudioStreamSource(audio.streamUrl, accessToken)
+              return { audio, source }
+            } catch {
+              // One unloadable record must not block the rest of the car
+              // catalog from being refreshed.
+              return null
+            }
+          }),
+        )
+      ).filter((entry) => entry !== null)
+
+      const entries = buildAndroidAutoRemoteCatalogEntries(resolved)
+      // Mirror the snapshot beside the native push: per-play upserts merge
+      // over this list, so it must track the last full sync.
+      setAndroidAutoRemoteCatalogSnapshot(entries)
+      await syncAndroidAutoRemoteLibrary(JSON.stringify(entries)).catch(
+        () => undefined,
+      )
+    },
+    [],
+  )
 
   const rotateSessionForProvider = useCallback((currentSession: Session) => {
     const pendingRefresh = sessionRefreshRef.current
@@ -220,6 +284,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setSession(catalogSession)
       }
 
+      // A retry below can rotate past catalogSession; remember the newest
+      // session so the car push below never pins a superseded token.
+      let pushSession = catalogSession
+
       const audios = await getCachedRemoteAudios(catalogSession.user.id, async () => {
         try {
           let activeSession = catalogSession
@@ -233,6 +301,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
             activeSession = await rotateSessionForProvider(activeSession)
             setSession(activeSession)
+            pushSession = activeSession
             return await loadAllRemoteAudios(activeSession.accessToken)
           }
         } catch (error) {
@@ -249,15 +318,83 @@ export function AuthProvider({ children }: PropsWithChildren) {
         }
       }, forceRefresh)
 
-      void syncRemoteLibraryForAndroidAuto(
+      void pushRemoteCatalogToCar(
         audios,
-        catalogSession.user.id,
-        catalogSession.accessToken,
-      )
+        pushSession.user.id,
+        pushSession.accessToken,
+      ).catch(() => undefined)
+      lastRemoteAudiosRef.current = audios
+      hasLoadedRemoteAudiosRef.current = true
       return audios
     },
-    [rotateSessionForProvider, session],
+    [pushRemoteCatalogToCar, rotateSessionForProvider, session],
   )
+
+  // The car snapshot pins credentials (Bearer headers, presigned URLs, or
+  // cached file URIs). A rotated access token invalidates the pinned Bearer
+  // headers, so refresh the remote list (fresh presigned URLs included) and
+  // push it as soon as the token changes. A genuine logout clears the
+  // snapshot instead of leaving expired credentials behind.
+  useEffect(() => {
+    if (!session) {
+      if (hadSessionRef.current) {
+        hadSessionRef.current = false
+        previousAccessTokenRef.current = null
+        lastRemoteAudiosRef.current = []
+        hasLoadedRemoteAudiosRef.current = false
+        setAndroidAutoRemoteCatalogSnapshot([])
+        clearRegisteredRemoteAudios()
+        void syncAndroidAutoRemoteLibrary('[]').catch(() => undefined)
+      }
+      return
+    }
+
+    hadSessionRef.current = true
+
+    if (previousAccessTokenRef.current === session.accessToken) {
+      return
+    }
+
+    previousAccessTokenRef.current = session.accessToken
+
+    if (!hasLoadedRemoteAudiosRef.current) {
+      return
+    }
+
+    void loadRemoteAudios(true).catch(() => undefined)
+  }, [loadRemoteAudios, session])
+
+  // A download that finishes after the last sync promotes that audio to an
+  // auth-immune cached file; push it to the car snapshot right away.
+  useEffect(() => {
+    sessionRef.current = session
+  }, [session])
+
+  useEffect(() => {
+    return subscribeToRemoteAudioFileCache((userId) => {
+      const activeSession = sessionRef.current
+
+      if (
+        Platform.OS !== 'android' ||
+        !activeSession ||
+        activeSession.user.id !== userId
+      ) {
+        return
+      }
+
+      const audios = lastRemoteAudiosRef.current
+
+      if (audios.length === 0) {
+        return
+      }
+
+      void pushRemoteCatalogToCar(
+        audios,
+        userId,
+        activeSession.accessToken,
+      ).catch(() => undefined)
+    })
+  }, [pushRemoteCatalogToCar])
 
   const getRemoteAudioStreamSource = useCallback(
     async (audio: RemoteAudio): Promise<RemoteAudioStreamSource> => {
@@ -465,6 +602,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
       }
     } finally {
       await syncAndroidAutoRemoteLibrary('[]').catch(() => undefined)
+      setAndroidAutoRemoteCatalogSnapshot([])
+      clearRegisteredRemoteAudios()
+      lastRemoteAudiosRef.current = []
+      hasLoadedRemoteAudiosRef.current = false
       if (session) {
         clearRemoteAudioCache(session.user.id)
         await clearRemoteAudioFileCache(session.user.id)
@@ -499,61 +640,6 @@ export function AuthProvider({ children }: PropsWithChildren) {
       {children}
     </AuthContext.Provider>
   )
-}
-
-function syncRemoteLibraryForAndroidAuto(
-  audios: readonly RemoteAudio[],
-  userId: string,
-  accessToken: string,
-): Promise<void> {
-  if (Platform.OS !== 'android') {
-    return Promise.resolve()
-  }
-
-  return Promise.all(
-    audios.map(async (audio) => {
-      const source = await getCachedRemoteAudioSource(userId, audio.id)
-      const networkSource =
-        source ?? buildRemoteAudioStreamSource(audio.streamUrl, accessToken)
-
-      return {
-        id: `remote:${audio.id}`,
-        originalName: audio.title,
-        localUri: networkSource.uri,
-        mimeType: null,
-        durationSeconds: getRemoteDurationSeconds(audio.metadata),
-        lastPositionSeconds: 0,
-        isPlayed: false,
-        metadata: { coverArtUrl: getRemoteCoverArtUrl(audio.metadata) },
-        updatedAt: audio.createdAt,
-        requestHeaders: networkSource.headers,
-      }
-    }),
-  )
-    .then((catalog) => syncAndroidAutoRemoteLibrary(JSON.stringify(catalog)))
-    .catch(() => undefined)
-}
-
-function getRemoteCoverArtUrl(metadata: unknown): string | null {
-  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
-    return null
-  }
-
-  const coverArtUrl = (metadata as Record<string, unknown>).coverArtUrl
-  return typeof coverArtUrl === 'string' && /^https?:\/\//i.test(coverArtUrl.trim())
-    ? coverArtUrl.trim()
-    : null
-}
-
-function getRemoteDurationSeconds(metadata: unknown): number | null {
-  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
-    return null
-  }
-
-  const durationMs = (metadata as Record<string, unknown>).durationMs
-  return typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0
-    ? durationMs / 1_000
-    : null
 }
 
 export function useAuth(): AuthContextValue {

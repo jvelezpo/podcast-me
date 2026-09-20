@@ -1,7 +1,7 @@
 {
   "name": "podcast-me",
   "main": "expo-router/entry",
-  "version": "1.0.16",
+  "version": "1.0.17",
   "expo": {
     "autolinking": {
       "android": {
@@ -25,6 +25,7 @@
     "expo-file-system": "~57.0.6",
     "expo-font": "~57.0.3",
     "expo-glass-effect": "~57.0.1",
+    "expo-haptics": "~57.0.3",
     "expo-image": "~57.0.4",
     "expo-linking": "~57.0.9",
     "expo-network": "~57.0.2",

@@ -8,7 +8,9 @@ const lightTheme = {
   backgroundSelected: '#ECEFF5',
   borderColor: '#E1E5ED',
   color: '#151821',
-  colorMuted: '#667085',
+  // Audited ≥ 4.5:1 against white, app background, selected, and
+  // accent-subtle surfaces (see tests/contrast.test.js).
+  colorMuted: '#5D6779',
   accent: '#6558E8',
   accentHover: '#574ACF',
   accentForeground: '#FFFFFF',

@@ -500,8 +500,14 @@ function PlaylistEntryRow({
   onMove,
   onRemove,
 }: PlaylistEntryRowProps) {
-  const { playback, remotePlayback, openPlayer, openRemotePlayer, library } =
-    useAudioLibraryContext()
+  const {
+    playback,
+    remotePlayback,
+    openPlayer,
+    openRemotePlayer,
+    library,
+    queuePlayNext,
+  } = useAudioLibraryContext()
 
   if (entry.kind === 'remote') {
     const audio = entry.audio
@@ -575,6 +581,9 @@ function PlaylistEntryRow({
         uploadError={null}
         onDelete={() => undefined}
         onOpenPlayer={openPlayer}
+        onPlayNext={(rowItem) =>
+          queuePlayNext({ kind: 'local', item: rowItem })
+        }
         onReorder={() => undefined}
         onSaveMetadata={library.updateAudioMetadata}
         onTogglePlayback={() => onPlay()}

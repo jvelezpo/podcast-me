@@ -1,9 +1,17 @@
 import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
-import type { AudioItemPlaybackUpdate } from '@/hooks/use-audio-library';
+import type {
+  AudioItemPlaybackUpdate,
+  AudioItemUpdateOptions,
+} from '@/hooks/use-audio-library';
 import type { LoadedAudioItem } from '@/services/audio-library-storage';
+import {
+  loadRememberedPlaybackRate,
+  saveRememberedPlaybackRate,
+} from '@/services/playback-rate-memory';
+import { clampPlaybackRate, getShowKey } from '@/utils/playback-rate';
 import { getAudioItemTitle } from '@/utils/audio-display';
 import { stopAndroidAutoPlayback } from '../../modules/android-auto';
 
@@ -14,7 +22,8 @@ export type AudioPlaybackError = {
 
 type UpdateAudioItem = (
   itemId: string,
-  update: AudioItemPlaybackUpdate
+  update: AudioItemPlaybackUpdate,
+  options?: AudioItemUpdateOptions,
 ) => Promise<boolean>;
 
 type PendingLoad = {
@@ -29,7 +38,8 @@ const CHECKPOINT_INTERVAL_MS = 5_000;
 export function useAudioLibraryPlayer(
   updateAudioItem: UpdateAudioItem,
   isLibraryReady: boolean,
-  onFinished?: (finishedItemId: string) => void
+  onFinished?: (finishedItemId: string) => void,
+  onUnexpectedPause?: () => void
 ) {
   // Native focus and route handling own recovery; delayed JS play() can override interruptions.
   const player = useAudioPlayer(null, { updateInterval: 500 });
@@ -47,10 +57,27 @@ export function useAudioLibraryPlayer(
   const audioModePromise = useRef<Promise<void> | null>(null);
   const playbackRateRef = useRef(1);
   const onFinishedRef = useRef(onFinished);
+  const onUnexpectedPauseRef = useRef(onUnexpectedPause);
+  const playbackErrorRef = useRef<AudioPlaybackError | null>(null);
+  /**
+   * True while the latest pause came from our own code (pause, stop,
+   * track switch, failure teardown). The unexpected-pause watcher consumes
+   * it; anything else that stops playback is external (call, route change).
+   */
+  const internalPauseRef = useRef(false);
+  const prevPlayingRef = useRef(false);
 
   useEffect(() => {
     onFinishedRef.current = onFinished;
   }, [onFinished]);
+
+  useEffect(() => {
+    onUnexpectedPauseRef.current = onUnexpectedPause;
+  }, [onUnexpectedPause]);
+
+  useEffect(() => {
+    playbackErrorRef.current = playbackError;
+  }, [playbackError]);
 
   const finishTransition = useCallback(() => {
     transitionInProgress.current = false;
@@ -100,11 +127,15 @@ export function useAudioLibraryPlayer(
   );
 
   const persistMetadata = useCallback(
-    async (itemId: string, update: AudioItemPlaybackUpdate) => {
+    async (
+      itemId: string,
+      update: AudioItemPlaybackUpdate,
+      options?: AudioItemUpdateOptions,
+    ) => {
       if (activeItemRef.current?.id === itemId) {
         activeItemRef.current = { ...activeItemRef.current, ...update };
       }
-      await updateAudioItem(itemId, update);
+      await updateAudioItem(itemId, update, options);
     },
     [updateAudioItem]
   );
@@ -116,6 +147,7 @@ export function useAudioLibraryPlayer(
       }
 
       pendingLoad.current = null;
+      internalPauseRef.current = true;
       try {
         player.pause();
         player.setActiveForLockScreen(false);
@@ -132,7 +164,8 @@ export function useAudioLibraryPlayer(
     async (
       itemId: string,
       positionSeconds: number,
-      durationSeconds: number | null
+      durationSeconds: number | null,
+      options?: AudioItemUpdateOptions,
     ) => {
       const position = safePosition(positionSeconds, durationSeconds);
 
@@ -141,13 +174,13 @@ export function useAudioLibraryPlayer(
       }
 
       lastCheckpoint.current = { itemId, savedAt: Date.now() };
-      await persistMetadata(itemId, { lastPositionSeconds: position });
+      await persistMetadata(itemId, { lastPositionSeconds: position }, options);
     },
     [persistMetadata]
   );
 
   const persistCurrentPosition = useCallback(
-    async (itemId: string) => {
+    async (itemId: string, options?: AudioItemUpdateOptions) => {
       const activeItem = activeItemRef.current;
 
       if (!activeItem || activeItem.id !== itemId || pendingLoad.current) {
@@ -158,7 +191,7 @@ export function useAudioLibraryPlayer(
       const duration =
         finitePositive(currentStatus.duration) ?? activeItem.durationSeconds;
 
-      await persistPosition(itemId, currentStatus.currentTime, duration);
+      await persistPosition(itemId, currentStatus.currentTime, duration, options);
     },
     [persistPosition]
   );
@@ -172,10 +205,11 @@ export function useAudioLibraryPlayer(
       try {
         stopAndroidAutoPlayback();
         await ensureAudioMode();
+        internalPauseRef.current = true;
         player.pause();
 
         if (previousItemId && previousItemId !== item.id) {
-          await persistCurrentPosition(previousItemId);
+          await persistCurrentPosition(previousItemId, { forcePersist: true });
         }
 
         if (requestId !== transitionSequence.current) {
@@ -184,6 +218,18 @@ export function useAudioLibraryPlayer(
 
         activeItemRef.current = item;
         setActiveItemId(item.id);
+
+        // Per-show memory: a returning show resumes at its own speed.
+        const rememberedRate = await loadRememberedPlaybackRate(
+          getShowKey(item.metadata)
+        );
+
+        if (requestId !== transitionSequence.current) {
+          return;
+        }
+
+        playbackRateRef.current = rememberedRate;
+        setPlaybackRateState(rememberedRate);
 
         const pending: PendingLoad = {
           requestId,
@@ -211,8 +257,9 @@ export function useAudioLibraryPlayer(
       setPlaybackError(null);
 
       try {
+        internalPauseRef.current = true;
         player.pause();
-        await persistCurrentPosition(item.id);
+        await persistCurrentPosition(item.id, { forcePersist: true });
 
         if (requestId === transitionSequence.current) {
           finishTransition();
@@ -232,6 +279,7 @@ export function useAudioLibraryPlayer(
       try {
         stopAndroidAutoPlayback();
         await ensureAudioMode();
+        internalPauseRef.current = false;
         const currentStatus = statusRef.current;
         const activeItem = activeItemRef.current ?? item;
         const duration =
@@ -244,7 +292,7 @@ export function useAudioLibraryPlayer(
 
         if (Math.abs(savedPosition - currentPosition) > 0.05) {
           await player.seekTo(savedPosition);
-          await persistPosition(item.id, savedPosition, duration);
+          await persistPosition(item.id, savedPosition, duration, { forcePersist: true });
         }
 
         if (requestId !== transitionSequence.current) {
@@ -303,7 +351,9 @@ export function useAudioLibraryPlayer(
           return;
         }
 
-        await persistPosition(activeItem.id, targetPosition, duration);
+        await persistPosition(activeItem.id, targetPosition, duration, {
+          forcePersist: true,
+        });
 
         if (requestId === transitionSequence.current) {
           finishTransition();
@@ -340,15 +390,19 @@ export function useAudioLibraryPlayer(
   );
 
   const setPlaybackRate = useCallback(
-    (rate: number): void => {
+    (rate: number, showKey?: string | null): void => {
       if (!Number.isFinite(rate)) {
         return;
       }
 
-      const safeRate = Math.min(Math.max(rate, 0.5), 2);
+      const safeRate = clampPlaybackRate(rate);
       playbackRateRef.current = safeRate;
       player.setPlaybackRate(safeRate);
       setPlaybackRateState(safeRate);
+      void saveRememberedPlaybackRate(
+        showKey ?? getShowKey(activeItemRef.current?.metadata),
+        safeRate
+      );
     },
     [player]
   );
@@ -356,6 +410,41 @@ export function useAudioLibraryPlayer(
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
+
+  // External pause detector (phone call, headphone/route change): playback
+  // was going and stopped without our code pausing, finishing, failing, or
+  // switching tracks. The context debounces this into an interruption toast.
+  useEffect(() => {
+    const wasPlaying = prevPlayingRef.current;
+    prevPlayingRef.current = status.playing;
+
+    if (status.playing) {
+      // Fresh play: any pause marker that never met its stop is obsolete.
+      internalPauseRef.current = false;
+      return;
+    }
+
+    if (!wasPlaying) {
+      return;
+    }
+
+    if (
+      status.didJustFinish ||
+      pendingLoad.current ||
+      transitionInProgress.current ||
+      playbackErrorRef.current !== null
+    ) {
+      internalPauseRef.current = false;
+      return;
+    }
+
+    if (internalPauseRef.current) {
+      internalPauseRef.current = false;
+      return;
+    }
+
+    onUnexpectedPauseRef.current?.();
+  }, [status.didJustFinish, status.playing]);
 
   useEffect(() => {
     void ensureAudioMode().catch(() => undefined);
@@ -403,7 +492,7 @@ export function useAudioLibraryPlayer(
       const activeItem = activeItemRef.current;
 
       if (activeItem) {
-        void persistCurrentPosition(activeItem.id);
+        void persistCurrentPosition(activeItem.id, { forcePersist: true });
       }
     });
 
@@ -413,7 +502,7 @@ export function useAudioLibraryPlayer(
       const activeItem = activeItemRef.current;
 
       if (activeItem) {
-        void persistCurrentPosition(activeItem.id);
+        void persistCurrentPosition(activeItem.id, { forcePersist: true });
       }
     };
   }, [persistCurrentPosition]);
@@ -454,7 +543,9 @@ export function useAudioLibraryPlayer(
           return;
         }
 
-        await persistPosition(pending.item.id, savedPosition, duration);
+        await persistPosition(pending.item.id, savedPosition, duration, {
+          forcePersist: true,
+        });
 
         if (pendingLoad.current?.requestId !== pending.requestId) {
           return;
@@ -462,6 +553,7 @@ export function useAudioLibraryPlayer(
 
         player.setPlaybackRate(playbackRateRef.current);
         activateLockScreenControls(pending.item);
+        internalPauseRef.current = false;
         player.play();
 
         if (pendingLoad.current?.requestId !== pending.requestId) {
@@ -533,8 +625,9 @@ export function useAudioLibraryPlayer(
       let didStopPlayer = false;
 
       try {
+        internalPauseRef.current = true;
         player.pause();
-        await persistCurrentPosition(itemId);
+        await persistCurrentPosition(itemId, { forcePersist: true });
       } catch {
         // Removal still has to stop playback even if its final checkpoint fails.
       } finally {
@@ -632,24 +725,77 @@ export function useAudioLibraryPlayer(
     return removeActiveItem(itemId, null, false);
   }, [removeActiveItem]);
 
-  return {
-    activeItemId,
-    currentPositionSeconds: finiteNonNegative(status.currentTime),
-    durationSeconds: status.isLoaded ? finitePositive(status.duration) : null,
-    isPlaying: status.playing && playbackError === null,
-    isReady: isLibraryReady,
-    isTransitioning,
-    playbackError,
-    playbackRate,
-    dismissPlayer,
-    pausePlayback,
-    removeActiveItem,
-    resumePlayback,
-    seekBy,
-    seekTo,
-    setPlaybackRate,
-    togglePlayback,
-  };
+  /**
+   * Stall retry: starts a fresh load for the current item, superseding any
+   * stuck transition. This is the same load path toggle-playback uses when
+   * playback errors or never became ready.
+   */
+  const retryPlayback = useCallback((): void => {
+    const activeItem = activeItemRef.current;
+
+    if (!activeItem) {
+      return;
+    }
+
+    void loadAndPlay(activeItem);
+  }, [loadAndPlay]);
+
+  const setVolume = useCallback(
+    (volume: number): void => {
+      if (!Number.isFinite(volume)) {
+        return;
+      }
+
+      player.volume = Math.min(Math.max(volume, 0), 1);
+    },
+    [player]
+  );
+
+  return useMemo(
+    () => ({
+      activeItemId,
+      currentPositionSeconds: finiteNonNegative(status.currentTime),
+      durationSeconds: status.isLoaded ? finitePositive(status.duration) : null,
+      isBuffering: status.isBuffering,
+      isPlaying: status.playing && playbackError === null,
+      isReady: isLibraryReady,
+      isTransitioning,
+      playbackError,
+      playbackRate,
+      dismissPlayer,
+      pausePlayback,
+      removeActiveItem,
+      resumePlayback,
+      retryPlayback,
+      seekBy,
+      seekTo,
+      setPlaybackRate,
+      setVolume,
+      togglePlayback,
+    }),
+    [
+      activeItemId,
+      dismissPlayer,
+      isLibraryReady,
+      isTransitioning,
+      pausePlayback,
+      playbackError,
+      playbackRate,
+      removeActiveItem,
+      resumePlayback,
+      retryPlayback,
+      seekBy,
+      seekTo,
+      setPlaybackRate,
+      setVolume,
+      status.currentTime,
+      status.duration,
+      status.isBuffering,
+      status.isLoaded,
+      status.playing,
+      togglePlayback,
+    ],
+  );
 }
 
 function finiteNonNegative(value: number): number {

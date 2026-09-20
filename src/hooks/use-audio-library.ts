@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
 import type { AudioItem, AudioMetadata } from '@/models/audio-item';
@@ -39,6 +39,23 @@ export type AudioItemPlaybackUpdate = Partial<
   Pick<AudioItem, 'durationSeconds' | 'lastPositionSeconds' | 'isPlayed'>
 >;
 
+/** Force an immediate persist (pause / background / seek / finish). */
+export type AudioItemUpdateOptions = {
+  forcePersist?: boolean;
+};
+
+/**
+ * Position-only checkpoints fire every 5 s while playing. Persisting +
+ * re-rendering the full library on each one is the §P1 cascade (full JSON
+ * serialize + AsyncStorage write + car-catalog bridge + `setItems` churn).
+ * The car service already persists progress natively, and the active row
+ * renders live position from the player status — so position-only updates
+ * update the ref immediately for fresh reads, throttle UI `setItems` to
+ * ~30 s, throttle disk writes to ~15 s, and never touch the car catalog.
+ */
+const POSITION_PERSIST_THROTTLE_MS = 15_000;
+const POSITION_UI_SYNC_MS = 30_000;
+
 export function useAudioLibrary() {
   const [items, setItems] = useState<LoadedAudioItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -48,6 +65,8 @@ export function useAudioLibrary() {
   const itemsRef = useRef<LoadedAudioItem[]>([]);
   const importInProgress = useRef(false);
   const mutationInProgress = useRef(false);
+  const lastPositionPersistAt = useRef(0);
+  const lastPositionUiSyncAt = useRef(0);
 
   useEffect(() => {
     let isMounted = true;
@@ -459,7 +478,11 @@ export function useAudioLibrary() {
   }, []);
 
   const updateAudioItem = useCallback(
-    async (itemId: string, update: AudioItemPlaybackUpdate): Promise<boolean> => {
+    async (
+      itemId: string,
+      update: AudioItemPlaybackUpdate,
+      options?: AudioItemUpdateOptions,
+    ): Promise<boolean> => {
       const currentItem = itemsRef.current.find((item) => item.id === itemId);
 
       if (!currentItem) {
@@ -489,8 +512,50 @@ export function useAudioLibrary() {
           : item
       );
 
+      const isPositionOnly =
+        hasPositionChange && !hasDurationChange && !hasPlayedChange;
+
+      if (isPositionOnly) {
+        // Live position stays out of React state: the ref is fresh for
+        // reads, the active row renders from player status, and UI +
+        // storage sync on a throttle so 5 s checkpoints no longer churn
+        // the list, AsyncStorage, or the car catalog.
+        itemsRef.current = nextItems;
+        const now = Date.now();
+        const force = options?.forcePersist === true;
+        const shouldUiSync =
+          force || now - lastPositionUiSyncAt.current >= POSITION_UI_SYNC_MS;
+        const shouldPersist =
+          force || now - lastPositionPersistAt.current >= POSITION_PERSIST_THROTTLE_MS;
+
+        if (shouldUiSync) {
+          lastPositionUiSyncAt.current = now;
+          setItems(nextItems);
+        }
+
+        if (!shouldPersist) {
+          return true;
+        }
+
+        lastPositionPersistAt.current = now;
+
+        try {
+          await saveAudioLibrary(nextItems, { syncCatalog: false });
+          return true;
+        } catch {
+          setNotice({
+            kind: 'warning',
+            title: 'Playback progress not saved',
+            message: 'Playback can continue, but the latest position or duration could not be saved.',
+          });
+          return false;
+        }
+      }
+
       itemsRef.current = nextItems;
       setItems(nextItems);
+      lastPositionPersistAt.current = Date.now();
+      lastPositionUiSyncAt.current = Date.now();
 
       try {
         await saveAudioLibrary(nextItems);
@@ -507,20 +572,41 @@ export function useAudioLibrary() {
     []
   );
 
-  return {
-    items,
-    isLoading,
-    importPhase,
-    isMutating,
-    notice,
-    addAudio,
-    removeAudio,
-    reorderAudio,
-    updateAudioMetadata,
-    updateAudioItem,
-    linkUploadedAudio,
-    dismissNotice: () => setNotice(null),
-  };
+  const dismissNotice = useCallback(() => setNotice(null), []);
+
+  // Memoize the return object so context consumers don't re-render when the
+  // provider re-renders for unrelated ticking state (§P0).
+  const addAudioCallback = useCallback(addAudio, [isLoading]);
+  return useMemo(
+    () => ({
+      items,
+      isLoading,
+      importPhase,
+      isMutating,
+      notice,
+      addAudio: addAudioCallback,
+      removeAudio,
+      reorderAudio,
+      updateAudioMetadata,
+      updateAudioItem,
+      linkUploadedAudio,
+      dismissNotice,
+    }),
+    [
+      items,
+      isLoading,
+      importPhase,
+      isMutating,
+      notice,
+      addAudioCallback,
+      removeAudio,
+      reorderAudio,
+      updateAudioMetadata,
+      updateAudioItem,
+      linkUploadedAudio,
+      dismissNotice,
+    ],
+  );
 }
 
 function formatImportFailures(failures: AudioImportFailure[]): string {

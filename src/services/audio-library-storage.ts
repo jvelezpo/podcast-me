@@ -95,8 +95,18 @@ export async function loadAudioLibrary(): Promise<AudioLibraryLoadResult> {
 /**
  * Queues a snapshot after the caller has updated its in-memory UI state.
  * Calls are persisted in invocation order, and one failed write does not block the next.
+ *
+ * Position-only checkpoints pass `{ syncCatalog: false }` to skip the
+ * car-catalog bridge: the native side already persists progress itself in
+ * `recordPlayback`, and re-parsing the full catalog + `notifyChildrenChanged`
+ * while nothing about membership/duration/Played changed is pure per-tick
+ * overhead (see UI responsiveness audit §P1).
  */
-export function saveAudioLibrary(items: readonly AudioItem[]): Promise<void> {
+export function saveAudioLibrary(
+  items: readonly AudioItem[],
+  options?: { syncCatalog?: boolean },
+): Promise<void> {
+  const syncCatalog = options?.syncCatalog ?? true;
   let serializedItems: string;
 
   try {
@@ -107,7 +117,9 @@ export function saveAudioLibrary(items: readonly AudioItem[]): Promise<void> {
 
   const write = writeTail.then(async () => {
     await AsyncStorage.setItem(AUDIO_LIBRARY_STORAGE_KEY, serializedItems);
-    await syncAndroidAutoLibrary(serializedItems);
+    if (syncCatalog) {
+      await syncAndroidAutoLibrary(serializedItems);
+    }
   });
 
   writeTail = write.catch(() => undefined);

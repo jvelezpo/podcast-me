@@ -3,6 +3,8 @@ import { Button, styled } from 'tamagui';
 export const AppButton = styled(Button, {
   name: 'AppButton',
   unstyled: true,
+  // Every interactive meets the 44px touch target. The ghost tone keeps no
+  // visible chrome but holds the same minimum; rows already exceed it.
   minHeight: 44,
   alignItems: 'center',
   justifyContent: 'center',
@@ -47,7 +49,7 @@ export const AppButton = styled(Button, {
         borderColor: '$danger',
       },
       ghost: {
-        minHeight: 36,
+        minHeight: 44,
         backgroundColor: 'transparent',
         borderWidth: 0,
         paddingHorizontal: 8,

@@ -2,7 +2,7 @@ import { Image } from 'expo-image';
 import * as SplashScreen from 'expo-splash-screen';
 import { useState } from 'react';
 import { Dimensions, StyleSheet } from 'react-native';
-import Animated, { Easing, Keyframe } from 'react-native-reanimated';
+import Animated, { Easing, Keyframe, useReducedMotion } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { View, styled } from 'tamagui';
 
@@ -12,6 +12,7 @@ const DURATION = 600;
 export function AnimatedSplashOverlay() {
   const [animate, setAnimate] = useState(false);
   const [visible, setVisible] = useState(true);
+  const reduceMotion = useReducedMotion();
 
   if (!visible) return null;
 
@@ -38,7 +39,7 @@ export function AnimatedSplashOverlay() {
 
   return animate ? (
     <AnimatedView
-      entering={splashKeyframe.duration(DURATION).withCallback((finished) => {
+      entering={reduceMotion ? undefined : splashKeyframe.duration(DURATION).withCallback((finished) => {
         'worklet';
         if (finished) {
           scheduleOnRN(setVisible, false);
@@ -51,7 +52,12 @@ export function AnimatedSplashOverlay() {
     <View
       onLayout={() => {
         SplashScreen.hideAsync().finally(() => {
-          setAnimate(true);
+          // Reduced motion skips the elastic splash entirely.
+          if (reduceMotion) {
+            setVisible(false);
+          } else {
+            setAnimate(true);
+          }
         });
       }}
       style={styles.splashOverlay}>
@@ -97,14 +103,16 @@ const glowKeyframe = new Keyframe({
 });
 
 export function AnimatedIcon() {
+  const reduceMotion = useReducedMotion();
+
   return (
     <View style={styles.iconContainer}>
-      <AnimatedView entering={glowKeyframe.duration(60 * 1000 * 4)} style={styles.glow}>
+      <AnimatedView entering={reduceMotion ? undefined : glowKeyframe.duration(60 * 1000 * 4)} style={styles.glow}>
         <Image style={styles.glow} source={require('@/assets/images/logo-glow.png')} />
       </AnimatedView>
 
-      <AnimatedView entering={keyframe.duration(DURATION)} style={styles.background} />
-      <AnimatedView style={styles.imageContainer} entering={logoKeyframe.duration(DURATION)}>
+      <AnimatedView entering={reduceMotion ? undefined : keyframe.duration(DURATION)} style={styles.background} />
+      <AnimatedView style={styles.imageContainer} entering={reduceMotion ? undefined : logoKeyframe.duration(DURATION)}>
         <Image style={styles.image} source={require('@/assets/images/expo-logo.png')} />
       </AnimatedView>
     </View>

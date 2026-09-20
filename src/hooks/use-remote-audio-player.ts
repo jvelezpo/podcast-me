@@ -1,5 +1,5 @@
 import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppState } from 'react-native'
 
 import type {
@@ -10,6 +10,11 @@ import type {
   RemoteAudioStreamSource,
 } from '@/services/api'
 import { getPlaybackDevice } from '@/services/playback-device'
+import {
+  loadRememberedPlaybackRate,
+  saveRememberedPlaybackRate,
+} from '@/services/playback-rate-memory'
+import { clampPlaybackRate, getShowKey } from '@/utils/playback-rate'
 import {
   createPlaybackEvent,
   createPlaybackEventSession,
@@ -57,6 +62,7 @@ export function useRemoteAudioPlayer(
   getPlaybackProgress: GetPlaybackProgress,
   sendPlaybackEvent: SendPlaybackEvent,
   onFinished?: (finishedAudioId: string) => void,
+  onUnexpectedPause?: () => void,
 ) {
   const player = useAudioPlayer(null, { updateInterval: 500 })
   const status = useAudioPlayerStatus(player)
@@ -78,9 +84,17 @@ export function useRemoteAudioPlayer(
   const playbackEventSendTailRef = useRef<Promise<void>>(Promise.resolve())
   const sendPlaybackEventRef = useRef(sendPlaybackEvent)
   const onFinishedRef = useRef(onFinished)
-  const lastCheckpointRef = useRef<{ audioId: string; savedAt: number } | null>(
+  const onUnexpectedPauseRef = useRef(onUnexpectedPause)
+  const playbackErrorRef = useRef<{ audioId: string; message: string } | null>(
     null,
   )
+  /**
+   * True while the latest pause came from our own code (pause, stop, track
+   * switch, failure teardown). The unexpected-pause watcher consumes it;
+   * anything else that stops playback is external (call, route change).
+   */
+  const internalPauseRef = useRef(false)
+  const prevPlayingRef = useRef(false)
 
   useEffect(() => {
     sendPlaybackEventRef.current = sendPlaybackEvent
@@ -89,6 +103,13 @@ export function useRemoteAudioPlayer(
   useEffect(() => {
     onFinishedRef.current = onFinished
   }, [onFinished])
+
+  useEffect(() => {
+    onUnexpectedPauseRef.current = onUnexpectedPause
+  }, [onUnexpectedPause])
+  const lastCheckpointRef = useRef<{ audioId: string; savedAt: number } | null>(
+    null,
+  )
 
   const queuePlaybackEvent = useCallback(
     (
@@ -199,6 +220,7 @@ export function useRemoteAudioPlayer(
     closePlaybackEventSession()
     transitionSequenceRef.current += 1
     pendingLoadRef.current = null
+    internalPauseRef.current = true
 
     try {
       player.pause()
@@ -227,6 +249,7 @@ export function useRemoteAudioPlayer(
 
       pendingLoadRef.current = null
       closePlaybackEventSession()
+      internalPauseRef.current = true
       try {
         player.pause()
         player.setActiveForLockScreen(false)
@@ -260,7 +283,7 @@ export function useRemoteAudioPlayer(
           shouldPlayInBackground: true,
           shouldRouteThroughEarpiece: false,
         })
-        const [source, localResumePositionSeconds, remoteProgress] =
+        const [source, localResumePositionSeconds, remoteProgress, rememberedRate] =
           await Promise.all([
             getStreamSource(audio),
             shouldResume
@@ -272,6 +295,7 @@ export function useRemoteAudioPlayer(
                   audio.id,
                 )
               : Promise.resolve(null),
+            loadRememberedPlaybackRate(getShowKey(audio.metadata)),
           ])
         const resumePositionSeconds = remoteProgress
           ? remoteProgress.completed
@@ -289,11 +313,16 @@ export function useRemoteAudioPlayer(
 
         persistCurrentPosition()
         closePlaybackEventSession()
+        internalPauseRef.current = true
         player.pause()
         activeAudioRef.current = audio
         setActiveAudioId(audio.id)
         setActiveAudio(audio)
         setIsUsingCachedSource(source.uri.startsWith('file:'))
+        // Per-show memory: a returning show resumes at its own speed. The
+        // pending-load effect applies `playbackRateRef` when playback starts.
+        playbackRateRef.current = rememberedRate
+        setPlaybackRateState(rememberedRate)
 
         const pendingLoad: PendingLoad = {
           audio,
@@ -341,9 +370,11 @@ export function useRemoteAudioPlayer(
 
       try {
         if (status.playing) {
+          internalPauseRef.current = true
           player.pause()
           persistCurrentPosition()
         } else {
+          internalPauseRef.current = false
           player.play()
           recordPlayback(audio)
         }
@@ -367,6 +398,7 @@ export function useRemoteAudioPlayer(
   const pausePlayback = useCallback(
     (audio: RemoteAudio): void => {
       if (activeAudioRef.current?.id === audio.id && status.isLoaded) {
+        internalPauseRef.current = true
         player.pause()
         persistCurrentPosition()
       }
@@ -377,6 +409,7 @@ export function useRemoteAudioPlayer(
   const resumePlayback = useCallback(
     (audio: RemoteAudio): void => {
       if (activeAudioRef.current?.id === audio.id && status.isLoaded) {
+        internalPauseRef.current = false
         player.play()
         recordPlayback(audio)
       }
@@ -431,6 +464,7 @@ export function useRemoteAudioPlayer(
         player.play()
         recordPlayback(pendingLoad.audio, pendingLoad.source)
         activateLockScreenControls(pendingLoad.audio)
+        internalPauseRef.current = false
         pendingLoadRef.current = null
         lastCheckpointRef.current = {
           audioId: pendingLoad.audio.id,
@@ -458,6 +492,46 @@ export function useRemoteAudioPlayer(
   useEffect(() => {
     statusRef.current = status
 
+    if (playbackErrorRef.current?.audioId !== playbackError?.audioId) {
+      playbackErrorRef.current = playbackError
+    }
+  }, [playbackError, status])
+
+  useEffect(() => {
+    const wasPlaying = prevPlayingRef.current
+    prevPlayingRef.current = status.playing
+
+    if (status.playing) {
+      // Fresh play: any pause marker that never met its stop is obsolete.
+      internalPauseRef.current = false
+      return
+    }
+
+    if (!wasPlaying) {
+      return
+    }
+
+    // External pause detector (phone call, headphone/route change): playback
+    // was going and stopped without our code pausing, stopping, failing, or
+    // switching tracks. The context debounces this into an interruption toast.
+    if (
+      status.didJustFinish ||
+      pendingLoadRef.current ||
+      playbackErrorRef.current !== null
+    ) {
+      internalPauseRef.current = false
+      return
+    }
+
+    if (internalPauseRef.current) {
+      internalPauseRef.current = false
+      return
+    }
+
+    onUnexpectedPauseRef.current?.()
+  }, [status.didJustFinish, status.playing])
+
+  useEffect(() => {
     const activeAudio = activeAudioRef.current
 
     if (!activeAudio || !status.isLoaded || !status.playing) {
@@ -670,8 +744,34 @@ export function useRemoteAudioPlayer(
     [seekTo, status.currentTime],
   )
 
+  /**
+   * Stall retry: starts a fresh load for the current audio, superseding any
+   * stuck transition. This is the same load path toggle-playback uses when
+   * streaming errors or never became ready.
+   */
+  const retryPlayback = useCallback((): void => {
+    const activeAudio = activeAudioRef.current
+
+    if (!activeAudio) {
+      return
+    }
+
+    void loadAndPlay(activeAudio)
+  }, [loadAndPlay])
+
+  const setVolume = useCallback(
+    (volume: number): void => {
+      if (!Number.isFinite(volume)) {
+        return
+      }
+
+      player.volume = Math.min(Math.max(volume, 0), 1)
+    },
+    [player],
+  )
+
   const setPlaybackRate = useCallback(
-    (rate: number): void => {
+    (rate: number, showKey?: string | null): void => {
       if (!Number.isFinite(rate)) {
         return
       }
@@ -694,32 +794,63 @@ export function useRemoteAudioPlayer(
         )
       }
 
-      const safeRate = Math.min(Math.max(rate, 0.5), 2)
+      const safeRate = clampPlaybackRate(rate)
       player.setPlaybackRate(safeRate)
       playbackRateRef.current = safeRate
       setPlaybackRateState(safeRate)
+      void saveRememberedPlaybackRate(
+        showKey ?? getShowKey(activeAudioRef.current?.metadata),
+        safeRate,
+      )
     },
     [player, queuePlaybackEvent],
   )
 
-  return {
-    activeAudio,
-    activeAudioId,
-    currentPositionSeconds: finiteNonNegative(status.currentTime),
-    durationSeconds: status.isLoaded ? finitePositive(status.duration) : null,
-    isPlaying: status.playing && playbackError === null,
-    isTransitioning,
-    isUsingCachedSource,
-    playbackRate,
-    playbackError,
-    pausePlayback,
-    resumePlayback,
-    seekBy,
-    seekTo,
-    setPlaybackRate,
-    stop,
-    togglePlayback,
-  }
+  return useMemo(
+    () => ({
+      activeAudio,
+      activeAudioId,
+      currentPositionSeconds: finiteNonNegative(status.currentTime),
+      durationSeconds: status.isLoaded ? finitePositive(status.duration) : null,
+      isBuffering: status.isBuffering,
+      isPlaying: status.playing && playbackError === null,
+      isTransitioning,
+      isUsingCachedSource,
+      playbackRate,
+      playbackError,
+      pausePlayback,
+      resumePlayback,
+      retryPlayback,
+      seekBy,
+      seekTo,
+      setPlaybackRate,
+      setVolume,
+      stop,
+      togglePlayback,
+    }),
+    [
+      activeAudio,
+      activeAudioId,
+      isTransitioning,
+      isUsingCachedSource,
+      pausePlayback,
+      playbackError,
+      playbackRate,
+      resumePlayback,
+      retryPlayback,
+      seekBy,
+      seekTo,
+      setPlaybackRate,
+      setVolume,
+      status.currentTime,
+      status.duration,
+      status.isBuffering,
+      status.isLoaded,
+      status.playing,
+      stop,
+      togglePlayback,
+    ],
+  )
 }
 
 function finiteNonNegative(value: number): number {

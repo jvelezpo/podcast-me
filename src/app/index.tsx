@@ -1,12 +1,20 @@
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
 import { useNetworkState } from 'expo-network'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { Alert, FlatList, Platform, RefreshControl, StyleSheet } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
 import { AudioLibraryRow } from '@/components/audio-library-row'
 import { AddToPlaylistSheet } from '@/components/add-to-playlist-sheet'
+import { EpisodeArtwork } from '@/components/episode-artwork'
 import { RemoteAudioRow } from '@/components/remote-audio-row'
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
@@ -23,7 +31,10 @@ import { useAuth } from '@/contexts/auth-context'
 import { useTheme } from '@/hooks/use-theme'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
 import type { RemoteAudio } from '@/services/api'
-import { findNextQueueEntry } from '@/services/playback-queue'
+import {
+  findNextQueueEntry,
+  findPreviousQueueEntry,
+} from '@/services/playback-queue'
 import { reconcileLibraryAudio } from '@/services/audio-reconciliation'
 import {
   downloadRemoteAudioFile,
@@ -38,7 +49,14 @@ import {
   type UploadableAudioAsset,
 } from '@/services/remote-audio-upload'
 import { buildRemoteMetadataUpdate } from '@/services/remote-audio-metadata'
-import { formatPlaybackTime, getAudioItemTitle } from '@/utils/audio-display'
+import {
+  formatEpisodeDate,
+  formatPlaybackTime,
+  getAudioItemTitle,
+} from '@/utils/audio-display'
+import { findResumeItem } from '@/utils/resume'
+import { notifyToast } from '@/services/toast-queue'
+import { success } from '@/services/haptics'
 import type { PlaylistAudioRef } from '@/models/playlist'
 
 type CollectionItem =
@@ -61,6 +79,10 @@ export default function HomeScreen() {
     remotePlayback,
     playerItem,
     setAutoAdvanceHandlers,
+    consumeEndOfEpisodeHold,
+    queuePlayNext,
+    consumePlayNextEntry,
+    setLibraryQueue,
   } = useAudioLibraryContext()
   const { getRemoteAudioStreamSource, loadRemoteAudios, uploadRemoteAudio, updateRemoteAudioMetadata, user } =
     useAuth()
@@ -68,11 +90,9 @@ export default function HomeScreen() {
   const theme = useTheme()
   const networkState = useNetworkState()
   const listRef = useRef<FlatList<CollectionItem>>(null)
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scrollRetryCountRef = useRef(0)
-  const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [highlightedItemId, setHighlightedItemId] = useState<string | null>(
     null,
   )
@@ -103,9 +123,42 @@ export default function HomeScreen() {
     networkState.isInternetReachable === false
   const isOnline = networkState.isConnected === true && !isOffline
   const hasPlayer = playback.activeItemId !== null
-  const totalDuration = library.items.reduce(
-    (total, item) => total + (item.durationSeconds ?? 0),
-    0,
+  const totalDuration = useMemo(
+    () =>
+      library.items.reduce(
+        (total, item) => total + (item.durationSeconds ?? 0),
+        0,
+      ),
+    [library.items],
+  )
+  // Continue-listening hero: the unfinished episode with the greatest saved
+  // position. Persisted every 5s while playing (plus pause/background saves),
+  // so kill-app → relaunch → 1-tap Resume lands within seconds of the spot.
+  const resumeItem = useMemo(
+    () => findResumeItem(library.items),
+    [library.items],
+  )
+  const isResumeItemActive =
+    resumeItem !== null && playback.activeItemId === resumeItem.id
+  const resumePositionSeconds =
+    resumeItem === null
+      ? 0
+      : isResumeItemActive
+        ? playback.currentPositionSeconds
+        : resumeItem.lastPositionSeconds
+  const resumeDurationSeconds =
+    resumeItem === null
+      ? null
+      : (isResumeItemActive
+          ? (playback.durationSeconds ?? resumeItem.durationSeconds)
+          : resumeItem.durationSeconds)
+  // Recently added (folded in from Discover): 3 most recent local imports.
+  const recentItems = useMemo(
+    () =>
+      [...library.items]
+        .sort((first, second) => second.addedAt.localeCompare(first.addedAt))
+        .slice(0, 3),
+    [library.items],
   )
   const visibleRemoteCollection =
     user && remoteCollection.userId === user.id ? remoteCollection : null
@@ -118,31 +171,36 @@ export default function HomeScreen() {
       ),
     [isOnline, library.items, visibleRemoteCollection],
   )
-  const collectionItems: CollectionItem[] = [
-    ...library.items.map((item) => ({ kind: 'local' as const, item })),
-    ...(visibleRemoteCollection?.audios ?? [])
-      .filter((audio) => !reconciliation.hiddenRemoteIds.has(audio.id))
-      .map((audio) => ({
-        kind: 'remote' as const,
-        audio,
-        isCached:
-          visibleRemoteCollection?.cachedAudioIds.has(audio.id) ?? false,
-      })),
-  ]
-  const contentContainerStyle = {
-    flexGrow: 1,
-    width: '100%' as const,
-    maxWidth: MaxContentWidth,
-    alignSelf: 'center' as const,
-    paddingHorizontal: media.wide ? Spacing.five : Spacing.three,
-    paddingTop: media.short ? Spacing.three : Spacing.four,
-    paddingBottom:
-      (hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four,
-  }
+  const collectionItems: CollectionItem[] = useMemo(
+    () => [
+      ...library.items.map((item) => ({ kind: 'local' as const, item })),
+      ...(visibleRemoteCollection?.audios ?? [])
+        .filter((audio) => !reconciliation.hiddenRemoteIds.has(audio.id))
+        .map((audio) => ({
+          kind: 'remote' as const,
+          audio,
+          isCached:
+            visibleRemoteCollection?.cachedAudioIds.has(audio.id) ?? false,
+        })),
+    ],
+    [library.items, reconciliation.hiddenRemoteIds, visibleRemoteCollection],
+  )
+  const contentContainerStyle = useMemo(
+    () => ({
+      flexGrow: 1 as const,
+      width: '100%' as const,
+      maxWidth: MaxContentWidth,
+      alignSelf: 'center' as const,
+      paddingHorizontal: media.wide ? Spacing.five : Spacing.three,
+      paddingTop: media.short ? Spacing.three : Spacing.four,
+      paddingBottom:
+        (hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four,
+    }),
+    [hasPlayer, media.short, media.wide],
+  )
 
   useEffect(() => {
     return () => {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
       if (scrollRetryTimerRef.current) clearTimeout(scrollRetryTimerRef.current)
     }
@@ -244,16 +302,12 @@ export default function HomeScreen() {
     }
   }, [isOnline, isRefreshing, loadRemoteAudios, user])
 
-  const showToast = (message: string) => {
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current)
-    }
+  // Centralized toasts: the ToastCenter mounted at the root renders these.
+  const showToast = useCallback((message: string) => {
+    notifyToast(message)
+  }, [])
 
-    setToastMessage(message)
-    toastTimerRef.current = setTimeout(() => setToastMessage(null), 3_500)
-  }
-
-  const highlightDuplicate = (itemId: string) => {
+  const highlightDuplicate = useCallback((itemId: string) => {
     if (highlightTimerRef.current) {
       clearTimeout(highlightTimerRef.current)
     }
@@ -262,9 +316,9 @@ export default function HomeScreen() {
       setHighlightedItemId(itemId)
       setHighlightToken((token) => token + 1)
     }, 600)
-  }
+  }, [])
 
-  const handleAddAudio = async () => {
+  const handleAddAudio = useCallback(async () => {
     const outcome = await library.addAudio()
 
     if (
@@ -297,127 +351,288 @@ export default function HomeScreen() {
       }
     }, 100)
     highlightDuplicate(outcome.duplicateItemId)
-  }
+  }, [highlightDuplicate, library, showToast])
 
-  const handleRemoveAudio = async (item: LoadedAudioItem) => {
-    const isActive = playback.activeItemId === item.id
-    const shouldPlayNext = isActive && playback.isPlaying
-    const removesLastItem = library.items.length === 1
-    const nextItem = shouldPlayNext
-      ? findNextPlayableItem(library.items, item.id)
-      : null
+  const handleRemoveAudio = useCallback(
+    async (item: LoadedAudioItem) => {
+      const isActive = playback.activeItemId === item.id
+      const shouldPlayNext = isActive && playback.isPlaying
+      const removesLastItem = library.items.length === 1
+      const nextItem = shouldPlayNext
+        ? findNextPlayableItem(library.items, item.id)
+        : null
 
-    const outcome = await library.removeAudio(
-      item.id,
-      isActive
-        ? async () => {
-            const stopped = await playback.removeActiveItem(
-              item.id,
-              nextItem,
-              shouldPlayNext,
-            )
-
-            if (!stopped) {
-              throw new Error(
-                'The active player could not stop the audio file.',
+      const outcome = await library.removeAudio(
+        item.id,
+        isActive
+          ? async () => {
+              const stopped = await playback.removeActiveItem(
+                item.id,
+                nextItem,
+                shouldPlayNext,
               )
+
+              if (!stopped) {
+                throw new Error(
+                  'The active player could not stop the audio file.',
+                )
+              }
             }
-          }
-        : undefined,
-    )
+          : undefined,
+      )
 
-    if (outcome.removed && removesLastItem) {
-      showToast('There are no more files to play.')
-    } else if (outcome.removed && shouldPlayNext && nextItem === null) {
-      showToast('There are no more playable files.')
-    }
+      if (outcome.removed && removesLastItem) {
+        showToast('There are no more files to play.')
+      } else if (outcome.removed && shouldPlayNext && nextItem === null) {
+        showToast('There are no more playable files.')
+      }
 
-    if (outcome.removed) {
-      // Keep playlists consistent: dropping a file removes it from every playlist.
-      void playlists.pruneLocalAudio(item.id)
-    }
-  }
+      if (outcome.removed) {
+        // Keep playlists consistent: dropping a file removes it from every playlist.
+        void playlists.pruneLocalAudio(item.id)
+      }
+    },
+    [
+      library.items,
+      library.removeAudio,
+      playback.activeItemId,
+      playback.isPlaying,
+      playback.removeActiveItem,
+      playlists,
+    ],
+  )
 
-  const confirmRemoveAudio = (item: LoadedAudioItem) => {
-    Alert.alert(
-      'Remove audio?',
-      `“${getAudioItemTitle(item)}” will be removed from the playlist and permanently deleted from app storage.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => void handleRemoveAudio(item),
-        },
-      ],
-    )
-  }
+  const confirmRemoveAudio = useCallback(
+    (item: LoadedAudioItem) => {
+      Alert.alert(
+        'Remove audio?',
+        `“${getAudioItemTitle(item)}” will be removed from the playlist and permanently deleted from app storage.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Remove',
+            style: 'destructive',
+            onPress: () => void handleRemoveAudio(item),
+          },
+        ],
+      )
+    },
+    [handleRemoveAudio],
+  )
 
-  const handleToggleLocalPlayback = (item: LoadedAudioItem) => {
-    if (remotePlayback.activeAudioId || remotePlayback.isTransitioning) {
-      remotePlayback.stop()
-    }
+  const handleToggleLocalPlayback = useCallback(
+    (item: LoadedAudioItem) => {
+      if (remotePlayback.activeAudioId || remotePlayback.isTransitioning) {
+        remotePlayback.stop()
+      }
 
-    playback.togglePlayback(item)
-  }
+      playback.togglePlayback(item)
+    },
+    [
+      playback.togglePlayback,
+      remotePlayback.activeAudioId,
+      remotePlayback.isTransitioning,
+      remotePlayback.stop,
+    ],
+  )
 
-  const handleToggleRemotePlayback = async (audio: RemoteAudio) => {
-    if (remotePlayback.activeAudioId !== audio.id && playback.activeItemId) {
-      const didStopLocalPlayback = await playback.dismissPlayer()
+  const handleToggleRemotePlayback = useCallback(
+    async (audio: RemoteAudio) => {
+      if (remotePlayback.activeAudioId !== audio.id && playback.activeItemId) {
+        const didStopLocalPlayback = await playback.dismissPlayer()
 
-      if (!didStopLocalPlayback) {
+        if (!didStopLocalPlayback) {
+          return
+        }
+      }
+
+      remotePlayback.togglePlayback(audio)
+    },
+    [
+      playback.activeItemId,
+      playback.dismissPlayer,
+      remotePlayback.activeAudioId,
+      remotePlayback.togglePlayback,
+    ],
+  )
+
+  const playCollectionEntry = useCallback(
+    (
+      entry:
+        | { kind: 'local'; item: LoadedAudioItem }
+        | { kind: 'remote'; audio: RemoteAudio },
+    ) => {
+      if (entry.kind === 'local') {
+        openPlayer(entry.item)
+        handleToggleLocalPlayback(entry.item)
+      } else {
+        openRemotePlayer(entry.audio)
+        void handleToggleRemotePlayback(entry.audio)
+      }
+    },
+    [
+      handleToggleLocalPlayback,
+      handleToggleRemotePlayback,
+      openPlayer,
+      openRemotePlayer,
+    ],
+  )
+
+  const advanceQueue = useCallback(
+    (finishedKind: 'local' | 'remote', finishedId: string) => {
+      // An armed End-of-episode sleep hold stops autoplay into the next file.
+      if (consumeEndOfEpisodeHold()) {
         return
       }
-    }
 
-    remotePlayback.togglePlayback(audio)
-  }
+      // A queued Play-next entry wins over natural collection order, one-shot.
+      const playNext = consumePlayNextEntry()
 
-  const advanceQueue = (finishedKind: 'local' | 'remote', finishedId: string) => {
-    const next = findNextQueueEntry(
-      collectionItems,
-      finishedKind,
-      finishedId,
-      isOnline,
-    )
+      if (playNext) {
+        if (
+          (playerItem?.kind === 'local' &&
+            finishedKind === 'local' &&
+            playerItem.item.id === finishedId) ||
+          (playerItem?.kind === 'remote' &&
+            finishedKind === 'remote' &&
+            playerItem.audio.id === finishedId)
+        ) {
+          if (playNext.kind === 'local') {
+            openPlayer(playNext.item)
+          } else {
+            openRemotePlayer(playNext.audio)
+          }
+        }
 
-    if (
-      next &&
-      ((playerItem?.kind === 'local' &&
-        finishedKind === 'local' &&
-        playerItem.item.id === finishedId) ||
-        (playerItem?.kind === 'remote' &&
-          finishedKind === 'remote' &&
-          playerItem.audio.id === finishedId))
-    ) {
-      if (next.kind === 'local') {
-        openPlayer(next.item)
-      } else {
-        openRemotePlayer(next.audio)
+        playCollectionEntry(playNext)
+        return
       }
-    }
 
-    if (!next) {
-      return
-    }
+      const next = findNextQueueEntry(
+        collectionItems,
+        finishedKind,
+        finishedId,
+        isOnline,
+      )
 
-    if (next.kind === 'local') {
-      handleToggleLocalPlayback(next.item)
-    } else {
-      void handleToggleRemotePlayback(next.audio)
-    }
-  }
+      if (
+        next &&
+        ((playerItem?.kind === 'local' &&
+          finishedKind === 'local' &&
+          playerItem.item.id === finishedId) ||
+          (playerItem?.kind === 'remote' &&
+            finishedKind === 'remote' &&
+            playerItem.audio.id === finishedId))
+      ) {
+        if (next.kind === 'local') {
+          openPlayer(next.item)
+        } else {
+          openRemotePlayer(next.audio)
+        }
+      }
+
+      if (!next) {
+        return
+      }
+
+      if (next.kind === 'local') {
+        handleToggleLocalPlayback(next.item)
+      } else {
+        void handleToggleRemotePlayback(next.audio)
+      }
+    },
+    [
+      collectionItems,
+      consumeEndOfEpisodeHold,
+      consumePlayNextEntry,
+      handleToggleLocalPlayback,
+      handleToggleRemotePlayback,
+      isOnline,
+      openPlayer,
+      openRemotePlayer,
+      playCollectionEntry,
+      playerItem,
+    ],
+  )
+
+  const skipInCollection = useCallback(
+    (direction: 'next' | 'previous'): boolean => {
+      // Manual navigation cancels a stale End-of-episode hold.
+      consumeEndOfEpisodeHold()
+      const activeKind = playback.activeItemId !== null
+        ? ('local' as const)
+        : remotePlayback.activeAudioId !== null
+          ? ('remote' as const)
+          : playerItem?.kind ?? null
+      const activeId =
+        playback.activeItemId ??
+        remotePlayback.activeAudioId ??
+        (playerItem?.kind === 'local' ? playerItem.item.id : playerItem?.audio.id) ??
+        null
+
+      if (activeKind === null || activeId === null) {
+        return false
+      }
+
+      const findAdjacent =
+        direction === 'next' ? findNextQueueEntry : findPreviousQueueEntry
+      const adjacent = findAdjacent(
+        collectionItems,
+        activeKind,
+        activeId,
+        isOnline,
+      )
+
+      if (!adjacent) {
+        return false
+      }
+
+      if (adjacent.kind === 'local') {
+        openPlayer(adjacent.item)
+        handleToggleLocalPlayback(adjacent.item)
+      } else {
+        openRemotePlayer(adjacent.audio)
+        void handleToggleRemotePlayback(adjacent.audio)
+      }
+
+      return true
+    },
+    [
+      collectionItems,
+      consumeEndOfEpisodeHold,
+      handleToggleLocalPlayback,
+      handleToggleRemotePlayback,
+      isOnline,
+      openPlayer,
+      openRemotePlayer,
+      playback.activeItemId,
+      playerItem,
+      remotePlayback.activeAudioId,
+    ],
+  )
 
   useEffect(() => {
+    // Publish library order as the active queue source of truth. The
+    // context keeps user reorder/removals and yields to explicit queues.
+    setLibraryQueue(collectionItems, isOnline)
     setAutoAdvanceHandlers({
       onLocalFinished: (finishedItemId) =>
         advanceQueue('local', finishedItemId),
       onRemoteFinished: (finishedAudioId) =>
         advanceQueue('remote', finishedAudioId),
+      onSkipToNext: () => skipInCollection('next'),
+      onSkipToPrevious: () => skipInCollection('previous'),
     })
 
     return () => setAutoAdvanceHandlers({})
-  })
+  }, [
+    advanceQueue,
+    collectionItems,
+    isOnline,
+    setAutoAdvanceHandlers,
+    setLibraryQueue,
+    skipInCollection,
+  ])
 
   const handleDownloadRemoteAudio = useCallback(
     async (audio: RemoteAudio) => {
@@ -565,6 +780,7 @@ export default function HomeScreen() {
           }
         }
 
+        success()
         showToast(`“${audio.title}” was uploaded to your library.`)
         await handleRefresh()
       } catch (error) {
@@ -591,6 +807,375 @@ export default function HomeScreen() {
     ],
   )
 
+  // Stable row callbacks (§P0): inline arrows would break `memo` rows on
+  // every tick. Inactive rows receive tick-stable props (0 / null / false)
+  // so only the active row re-renders while playing.
+  const handlePlayNext = useCallback(
+    (rowItem: LoadedAudioItem) => {
+      queuePlayNext({ kind: 'local', item: rowItem })
+      showToast(`“${getAudioItemTitle(rowItem)}” will play next.`)
+    },
+    [queuePlayNext],
+  )
+  const handleReorderRow = useCallback(
+    (itemId: string, offset: number) => {
+      void library.reorderAudio(itemId, offset)
+    },
+    [library],
+  )
+  const handleUploadRow = useCallback(
+    (rowItem: LoadedAudioItem) => {
+      void handleUploadLocalItem(rowItem)
+    },
+    [handleUploadLocalItem],
+  )
+  const handleAddLocalToPlaylist = useCallback(
+    (rowItem: LoadedAudioItem) => {
+      setPlaylistSheet({
+        ref: { kind: 'local', audioId: rowItem.id },
+        title: getAudioItemTitle(rowItem),
+      })
+    },
+    [],
+  )
+  const handleAddRemoteToPlaylist = useCallback((audio: RemoteAudio) => {
+    setPlaylistSheet({
+      ref: { kind: 'remote', audioId: audio.id },
+      title: audio.title,
+    })
+  }, [])
+  const handleDownloadRow = useCallback(
+    (audio: RemoteAudio) => {
+      void handleDownloadRemoteAudio(audio)
+    },
+    [handleDownloadRemoteAudio],
+  )
+  const handleToggleRemoteRow = useCallback(
+    (audio: RemoteAudio) => {
+      void handleToggleRemotePlayback(audio)
+    },
+    [handleToggleRemotePlayback],
+  )
+  const handleResumeHero = useCallback(() => {
+    if (resumeItem) {
+      playCollectionEntry({ kind: 'local', item: resumeItem })
+    }
+  }, [playCollectionEntry, resumeItem])
+  const handlePlayRecentRow = useCallback(
+    (item: LoadedAudioItem) => {
+      playCollectionEntry({ kind: 'local', item })
+    },
+    [playCollectionEntry],
+  )
+  const handleRefreshRow = useCallback(() => {
+    void handleRefresh()
+  }, [handleRefresh])
+  const handleAddAudioRow = useCallback(() => {
+    void handleAddAudio()
+  }, [handleAddAudio])
+
+  const renderCollectionItem = useCallback(
+    ({ item }: { item: CollectionItem }) => {
+      if (item.kind === 'remote') {
+        const isDownloading = downloadingAudioIds.has(item.audio.id)
+        const isActive = remotePlayback.activeAudioId === item.audio.id
+
+        return (
+          <RemoteAudioRow
+            audio={item.audio}
+            isCached={item.isCached}
+            downloadState={getRemoteAudioDownloadState(
+              item.isCached,
+              isDownloading,
+            )}
+            canDownload={Platform.OS !== 'web' && user !== null}
+            downloadError={downloadErrors[item.audio.id] ?? null}
+            isActive={isActive}
+            isPlaying={isActive && remotePlayback.isPlaying}
+            isTransitioning={remotePlayback.isTransitioning}
+            playbackError={
+              remotePlayback.playbackError?.audioId === item.audio.id
+                ? remotePlayback.playbackError.message
+                : null
+            }
+            onOpenPlayer={openRemotePlayer}
+            onTogglePlayback={handleToggleRemoteRow}
+            onDownload={handleDownloadRow}
+            onRemoveDownload={handleRemoveRemoteDownload}
+            onAddToPlaylist={handleAddRemoteToPlaylist}
+          />
+        )
+      }
+
+      const localItem = item.item
+      const isActive = playback.activeItemId === localItem.id
+      const isUploadingItem = uploadingItemId === localItem.id
+      const isUploaded = reconciliation.uploadedLocalIds.has(localItem.id)
+      const itemUploadProgress =
+        isUploadingItem && uploadProgress && uploadProgress.totalBytes > 0
+          ? Math.min(
+              100,
+              Math.round(
+                (uploadProgress.bytesSent / uploadProgress.totalBytes) * 100,
+              ),
+            )
+          : null
+
+      return (
+        <AudioLibraryRow
+          item={localItem}
+          isActive={isActive}
+          isPlaying={isActive && playback.isPlaying}
+          isTransitioning={playback.isTransitioning}
+          isPlaybackReady={playback.isReady}
+          currentPositionSeconds={
+            isActive ? playback.currentPositionSeconds : 0
+          }
+          duplicateHighlightToken={
+            highlightedItemId === localItem.id ? highlightToken : 0
+          }
+          isDeleteDisabled={isLibraryBusy || playback.isTransitioning}
+          isMetadataDisabled={isLibraryBusy}
+          isReorderDisabled={isLibraryBusy || library.items.length < 2}
+          loadedDurationSeconds={
+            isActive ? playback.durationSeconds : null
+          }
+          playbackError={playback.playbackError}
+          canUpload={canUploadRow && !isUploaded}
+          isUploading={isUploadingItem}
+          isUploaded={isUploaded}
+          uploadProgressPercent={itemUploadProgress}
+          uploadError={uploadErrors[localItem.id] ?? null}
+          onDelete={confirmRemoveAudio}
+          onOpenPlayer={openPlayer}
+          onPlayNext={handlePlayNext}
+          onReorder={handleReorderRow}
+          onSaveMetadata={library.updateAudioMetadata}
+          onTogglePlayback={handleToggleLocalPlayback}
+          onUpload={handleUploadRow}
+          onAddToPlaylist={handleAddLocalToPlaylist}
+        />
+      )
+    },
+    [
+      canUploadRow,
+      confirmRemoveAudio,
+      downloadErrors,
+      downloadingAudioIds,
+      handleAddRemoteToPlaylist,
+      handleDownloadRow,
+      handlePlayNext,
+      handleReorderRow,
+      handleRemoveRemoteDownload,
+      handleToggleLocalPlayback,
+      handleToggleRemoteRow,
+      handleUploadRow,
+      handleAddLocalToPlaylist,
+      highlightedItemId,
+      highlightToken,
+      isLibraryBusy,
+      library,
+      openPlayer,
+      openRemotePlayer,
+      playback.activeItemId,
+      playback.currentPositionSeconds,
+      playback.durationSeconds,
+      playback.isPlaying,
+      playback.isReady,
+      playback.isTransitioning,
+      playback.playbackError,
+      reconciliation.uploadedLocalIds,
+      remotePlayback.activeAudioId,
+      remotePlayback.isPlaying,
+      remotePlayback.isTransitioning,
+      remotePlayback.playbackError,
+      uploadErrors,
+      uploadingItemId,
+      uploadProgress,
+      user,
+    ],
+  )
+
+  const renderItemSeparator = useCallback(
+    () => <View height={Spacing.three} />,
+    [],
+  )
+
+  const handleScrollToIndexFailed = useCallback(
+    ({ averageItemLength, index }: { averageItemLength: number; index: number }) => {
+      if (scrollRetryCountRef.current >= 2) {
+        return
+      }
+
+      scrollRetryCountRef.current += 1
+      listRef.current?.scrollToOffset({
+        animated: true,
+        offset: Math.max(0, averageItemLength * index),
+      })
+
+      if (scrollRetryTimerRef.current) {
+        clearTimeout(scrollRetryTimerRef.current)
+      }
+
+      scrollRetryTimerRef.current = setTimeout(() => {
+        listRef.current?.scrollToIndex({
+          animated: true,
+          index,
+          viewPosition: 0.5,
+        })
+      }, 250)
+    },
+    [],
+  )
+
+  const listHeader = useMemo(
+    () => (
+      <YStack gap={Spacing.four} marginBottom={Spacing.four}>
+        {isOffline && <OfflineNotice />}
+        <XStack
+          alignItems="flex-end"
+          justifyContent="space-between"
+          gap={Spacing.three}
+          $compact={{ flexDirection: 'column', alignItems: 'stretch' }}
+        >
+          <YStack flex={1} gap={Spacing.one}>
+            <XStack alignItems="center" gap={Spacing.two}>
+              <ThemedText type="eyebrow" themeColor="accent">
+                Your collection
+              </ThemedText>
+              {isOnline && (
+                <View
+                  width={8}
+                  height={8}
+                  borderRadius={8}
+                  backgroundColor="$success"
+                  accessibilityLabel="Internet connected"
+                />
+              )}
+            </XStack>
+            <ThemedText
+              type="title"
+              $compact={{ fontSize: 36, lineHeight: 42 }}
+            >
+              Library
+            </ThemedText>
+            <ThemedText themeColor="textSecondary">
+              Everything you save stays private on this device.
+            </ThemedText>
+          </YStack>
+
+          {Platform.OS !== 'web' && !library.isLoading && (
+            <AddAudioButton
+              disabled={isLibraryBusy}
+              importPhase={library.importPhase}
+              onPress={handleAddAudioRow}
+              tintColor={theme.accentForeground}
+            />
+          )}
+        </XStack>
+
+        {!library.isLoading && resumeItem && (
+          <ResumeHero
+            item={resumeItem}
+            positionSeconds={resumePositionSeconds}
+            durationSeconds={resumeDurationSeconds}
+            isResumeDisabled={
+              playback.isTransitioning || !playback.isReady
+            }
+            onResume={handleResumeHero}
+          />
+        )}
+
+        {!library.isLoading && library.items.length > 0 && (
+          <XStack flexWrap="wrap" gap={Spacing.two}>
+            <StatChip
+              value={`${library.items.length}`}
+              label="Episodes"
+            />
+            <StatChip
+              value={`${library.items.filter((item) => !item.isPlayed).length}`}
+              label="Unplayed"
+            />
+            <StatChip
+              value={formatPlaybackTime(totalDuration)}
+              label="Total time"
+            />
+          </XStack>
+        )}
+
+        {!library.isLoading && recentItems.length > 0 && (
+          <RecentlyAdded
+            items={recentItems}
+            activeItemId={playback.activeItemId}
+            isPlaying={playback.isPlaying}
+            onPlay={handlePlayRecentRow}
+          />
+        )}
+
+        {Platform.OS === 'web' && (
+          <ThemedView
+            type="backgroundElement"
+            padding={Spacing.three}
+            borderRadius={Radius.medium}
+            borderWidth={1}
+            borderColor="$borderColor"
+          >
+            <ThemedText type="small" themeColor="textSecondary">
+              Import new files from the Android or iOS app. Your existing
+              library remains available here.
+            </ThemedText>
+          </ThemedView>
+        )}
+
+        {library.notice && (
+          <StatusNotice
+            title={library.notice.title}
+            message={library.notice.message}
+            onDismiss={library.dismissNotice}
+          />
+        )}
+
+        {library.importPhase === 'picking' && (
+          <ThemedText type="small" themeColor="textSecondary">
+            File picker open…
+          </ThemedText>
+        )}
+
+        {library.importPhase === 'importing' && (
+          <XStack alignItems="center" gap={Spacing.two}>
+            <Spinner size="small" color="$accent" />
+            <ThemedText type="small" themeColor="textSecondary">
+              Copying audio into your library…
+            </ThemedText>
+          </XStack>
+        )}
+      </YStack>
+    ),
+    [
+      handleAddAudioRow,
+      handlePlayRecentRow,
+      handleResumeHero,
+      isOffline,
+      isOnline,
+      isLibraryBusy,
+      library.dismissNotice,
+      library.importPhase,
+      library.isLoading,
+      library.items,
+      library.notice,
+      playback.activeItemId,
+      playback.isPlaying,
+      playback.isReady,
+      playback.isTransitioning,
+      recentItems,
+      resumeDurationSeconds,
+      resumeItem,
+      resumePositionSeconds,
+      theme.accentForeground,
+      totalDuration,
+    ],
+  )
+
   return (
     <ThemedView flex={1}>
       <SafeAreaView style={styles.safeArea}>
@@ -605,113 +1190,13 @@ export default function HomeScreen() {
           refreshControl={
             <RefreshControl
               refreshing={isRefreshing}
-              onRefresh={() => void handleRefresh()}
+              onRefresh={handleRefreshRow}
               tintColor={theme.accent}
               colors={[theme.accent]}
             />
           }
-          ItemSeparatorComponent={() => <View height={Spacing.three} />}
-          ListHeaderComponent={
-            <YStack gap={Spacing.four} marginBottom={Spacing.four}>
-              {isOffline && <OfflineNotice />}
-              <XStack
-                alignItems="flex-end"
-                justifyContent="space-between"
-                gap={Spacing.three}
-                $compact={{ flexDirection: 'column', alignItems: 'stretch' }}
-              >
-                <YStack flex={1} gap={Spacing.one}>
-                  <XStack alignItems="center" gap={Spacing.two}>
-                    <ThemedText type="eyebrow" themeColor="accent">
-                      Your collection
-                    </ThemedText>
-                    {isOnline && (
-                      <View
-                        width={8}
-                        height={8}
-                        borderRadius={8}
-                        backgroundColor="$success"
-                        accessibilityLabel="Internet connected"
-                      />
-                    )}
-                  </XStack>
-                  <ThemedText
-                    type="title"
-                    $compact={{ fontSize: 36, lineHeight: 42 }}
-                  >
-                    Library
-                  </ThemedText>
-                  <ThemedText themeColor="textSecondary">
-                    Everything you save stays private on this device.
-                  </ThemedText>
-                </YStack>
-
-                {Platform.OS !== 'web' && !library.isLoading && (
-                  <AddAudioButton
-                    disabled={isLibraryBusy}
-                    importPhase={library.importPhase}
-                    onPress={() => void handleAddAudio()}
-                    tintColor={theme.accentForeground}
-                  />
-                )}
-              </XStack>
-
-              {!library.isLoading && library.items.length > 0 && (
-                <XStack flexWrap="wrap" gap={Spacing.two}>
-                  <StatChip
-                    value={`${library.items.length}`}
-                    label="Episodes"
-                  />
-                  <StatChip
-                    value={`${library.items.filter((item) => !item.isPlayed).length}`}
-                    label="Unplayed"
-                  />
-                  <StatChip
-                    value={formatPlaybackTime(totalDuration)}
-                    label="Total time"
-                  />
-                </XStack>
-              )}
-
-              {Platform.OS === 'web' && (
-                <ThemedView
-                  type="backgroundElement"
-                  padding={Spacing.three}
-                  borderRadius={Radius.medium}
-                  borderWidth={1}
-                  borderColor="$borderColor"
-                >
-                  <ThemedText type="small" themeColor="textSecondary">
-                    Import new files from the Android or iOS app. Your existing
-                    library remains available here.
-                  </ThemedText>
-                </ThemedView>
-              )}
-
-              {library.notice && (
-                <StatusNotice
-                  title={library.notice.title}
-                  message={library.notice.message}
-                  onDismiss={library.dismissNotice}
-                />
-              )}
-
-              {library.importPhase === 'picking' && (
-                <ThemedText type="small" themeColor="textSecondary">
-                  File picker open…
-                </ThemedText>
-              )}
-
-              {library.importPhase === 'importing' && (
-                <XStack alignItems="center" gap={Spacing.two}>
-                  <Spinner size="small" color="$accent" />
-                  <ThemedText type="small" themeColor="textSecondary">
-                    Copying audio into your library…
-                  </ThemedText>
-                </XStack>
-              )}
-            </YStack>
-          }
+          ItemSeparatorComponent={renderItemSeparator}
+          ListHeaderComponent={listHeader}
           ListEmptyComponent={
             library.isLoading ? (
               <ThemedView
@@ -771,130 +1256,21 @@ export default function HomeScreen() {
                   <AddAudioButton
                     disabled={isLibraryBusy}
                     importPhase={library.importPhase}
-                    onPress={() => void handleAddAudio()}
+                    onPress={handleAddAudioRow}
                     tintColor={theme.accentForeground}
                   />
                 )}
               </ThemedView>
             )
           }
-          onScrollToIndexFailed={({ averageItemLength, index }) => {
-            if (scrollRetryCountRef.current >= 2) {
-              return
-            }
-
-            scrollRetryCountRef.current += 1
-            listRef.current?.scrollToOffset({
-              animated: true,
-              offset: Math.max(0, averageItemLength * index),
-            })
-
-            if (scrollRetryTimerRef.current) {
-              clearTimeout(scrollRetryTimerRef.current)
-            }
-
-            scrollRetryTimerRef.current = setTimeout(() => {
-              listRef.current?.scrollToIndex({
-                animated: true,
-                index,
-                viewPosition: 0.5,
-              })
-            }, 250)
-          }}
-          renderItem={({ item }) => {
-            if (item.kind === 'remote') {
-              const isDownloading = downloadingAudioIds.has(item.audio.id)
-              return (
-                <RemoteAudioRow
-                  audio={item.audio}
-                  isCached={item.isCached}
-                  downloadState={getRemoteAudioDownloadState(
-                    item.isCached,
-                    isDownloading,
-                  )}
-                  canDownload={Platform.OS !== 'web' && user !== null}
-                  downloadError={downloadErrors[item.audio.id] ?? null}
-                  isActive={remotePlayback.activeAudioId === item.audio.id}
-                  isPlaying={remotePlayback.isPlaying}
-                  isTransitioning={remotePlayback.isTransitioning}
-                  playbackError={
-                    remotePlayback.playbackError?.audioId === item.audio.id
-                      ? remotePlayback.playbackError.message
-                      : null
-                  }
-                  onOpenPlayer={openRemotePlayer}
-                  onTogglePlayback={(audio) =>
-                    void handleToggleRemotePlayback(audio)
-                  }
-                  onDownload={(audio) => void handleDownloadRemoteAudio(audio)}
-                  onRemoveDownload={handleRemoveRemoteDownload}
-                  onAddToPlaylist={(audio) =>
-                    setPlaylistSheet({
-                      ref: { kind: 'remote', audioId: audio.id },
-                      title: audio.title,
-                    })
-                  }
-                />
-              )
-            }
-
-            const localItem = item.item
-            const isActive = playback.activeItemId === localItem.id
-            const isUploadingItem = uploadingItemId === localItem.id
-            const isUploaded = reconciliation.uploadedLocalIds.has(localItem.id)
-            const itemUploadProgress =
-              isUploadingItem && uploadProgress && uploadProgress.totalBytes > 0
-                ? Math.min(
-                    100,
-                    Math.round(
-                      (uploadProgress.bytesSent / uploadProgress.totalBytes) *
-                        100,
-                    ),
-                  )
-                : null
-
-            return (
-              <AudioLibraryRow
-                item={localItem}
-                isActive={isActive}
-                isPlaying={isActive && playback.isPlaying}
-                isTransitioning={playback.isTransitioning}
-                isPlaybackReady={playback.isReady}
-                currentPositionSeconds={playback.currentPositionSeconds}
-                duplicateHighlightToken={
-                  highlightedItemId === localItem.id ? highlightToken : 0
-                }
-                isDeleteDisabled={isLibraryBusy || playback.isTransitioning}
-                isMetadataDisabled={isLibraryBusy}
-                isReorderDisabled={isLibraryBusy || library.items.length < 2}
-                loadedDurationSeconds={playback.durationSeconds}
-                playbackError={playback.playbackError}
-                canUpload={canUploadRow && !isUploaded}
-                isUploading={isUploadingItem}
-                isUploaded={isUploaded}
-                uploadProgressPercent={itemUploadProgress}
-                uploadError={uploadErrors[localItem.id] ?? null}
-                onDelete={confirmRemoveAudio}
-                onOpenPlayer={openPlayer}
-                onReorder={(itemId, offset) =>
-                  void library.reorderAudio(itemId, offset)
-                }
-                onSaveMetadata={library.updateAudioMetadata}
-                onTogglePlayback={handleToggleLocalPlayback}
-                onUpload={(rowItem) => void handleUploadLocalItem(rowItem)}
-                onAddToPlaylist={(rowItem) =>
-                  setPlaylistSheet({
-                    ref: { kind: 'local', audioId: rowItem.id },
-                    title: getAudioItemTitle(rowItem),
-                  })
-                }
-              />
-            )
-          }}
+          onScrollToIndexFailed={handleScrollToIndexFailed}
+          renderItem={renderCollectionItem}
+          removeClippedSubviews
+          windowSize={7}
+          initialNumToRender={10}
+          maxToRenderPerBatch={10}
+          updateCellsBatchingPeriod={50}
         />
-        {toastMessage && (
-          <ToastMessage message={toastMessage} hasPlayer={hasPlayer} />
-        )}
         {playlistSheet && (
           <AddToPlaylistSheet
             audioRef={playlistSheet.ref}
@@ -975,13 +1351,230 @@ function OfflineNotice() {
     >
       <View width={8} height={8} borderRadius={8} backgroundColor="$danger" />
       <ThemedText type="smallBold" color="$danger">
-        no internet connection
+        No internet connection
       </ThemedText>
     </ThemedView>
   )
 }
 
-function StatChip({ label, value }: { label: string; value: string }) {
+type ResumeHeroProps = {
+  item: LoadedAudioItem
+  positionSeconds: number
+  durationSeconds: number | null
+  isResumeDisabled: boolean
+  onResume: () => void
+}
+
+/**
+ * Continue-listening hero at the top of the Library: the unfinished episode
+ * with the greatest saved position, shown as
+ * `title · position of duration · remaining left · [Resume]`. One tap opens
+ * the player and resumes from the saved position (the loader seeks there).
+ */
+function ResumeHero({
+  item,
+  positionSeconds,
+  durationSeconds,
+  isResumeDisabled,
+  onResume,
+}: ResumeHeroProps) {
+  return (
+    <ResumeHeroView
+      item={item}
+      positionSeconds={positionSeconds}
+      durationSeconds={durationSeconds}
+      isResumeDisabled={isResumeDisabled}
+      onResume={onResume}
+    />
+  )
+}
+
+const ResumeHeroView = memo(function ResumeHeroView({
+  item,
+  positionSeconds,
+  durationSeconds,
+  isResumeDisabled,
+  onResume,
+}: ResumeHeroProps) {
+  const theme = useTheme()
+  const title = getAudioItemTitle(item)
+  const remainingSeconds =
+    durationSeconds === null
+      ? null
+      : Math.max(0, durationSeconds - positionSeconds)
+  const progress =
+    durationSeconds !== null && durationSeconds > 0
+      ? Math.min(Math.max(positionSeconds / durationSeconds, 0), 1)
+      : 0
+  const positionLabel =
+    durationSeconds === null
+      ? formatPlaybackTime(positionSeconds)
+      : `${formatPlaybackTime(positionSeconds)} of ${formatPlaybackTime(durationSeconds)}`
+
+  return (
+    <ThemedView
+      type="backgroundElement"
+      gap={Spacing.three}
+      padding={Spacing.three}
+      borderWidth={1}
+      borderColor="$accent"
+      borderRadius={Radius.large}
+    >
+      <XStack alignItems="center" gap={Spacing.three}>
+        <EpisodeArtwork
+          imageUrl={item.metadata.coverArtUrl}
+          itemId={item.id}
+          name={title}
+          size={56}
+        />
+        <YStack flex={1} minWidth={0} gap={Spacing.half}>
+          <ThemedText type="eyebrow" themeColor="accent">
+            Continue listening
+          </ThemedText>
+          <ThemedText type="episodeTitle" numberOfLines={2}>
+            {title}
+          </ThemedText>
+          <ThemedText
+            type="metadata"
+            themeColor="textSecondary"
+            numberOfLines={1}
+          >
+            {positionLabel}
+            {remainingSeconds !== null
+              ? ` · ${formatPlaybackTime(remainingSeconds)} left`
+              : null}
+          </ThemedText>
+        </YStack>
+      </XStack>
+      <View
+        height={4}
+        borderRadius={4}
+        backgroundColor="$backgroundSelected"
+        accessibilityElementsHidden
+      >
+        <View
+          height="100%"
+          width={`${progress * 100}%`}
+          borderRadius={4}
+          backgroundColor="$accent"
+        />
+      </View>
+      <AppButton
+        accessibilityLabel={`Resume ${title} from ${formatPlaybackTime(positionSeconds)}`}
+        accessibilityHint="Starts playback from where you left off"
+        disabled={isResumeDisabled}
+        onPress={onResume}
+        minHeight={48}
+      >
+        <SymbolView
+          name={RESUME_ICON}
+          size={18}
+          tintColor={theme.accentForeground}
+          weight="bold"
+        />
+        <ThemedText type="smallBold" color="$accentForeground">
+          Resume
+        </ThemedText>
+      </AppButton>
+    </ThemedView>
+  )
+})
+
+/**
+ * Recently added (folded in from Discover): the 3 most recent imports with
+ * a 44px play affordance. The full collection below stays in queue order;
+ * this section surfaces fresh arrivals without leaving Library.
+ */
+const RecentlyAdded = memo(function RecentlyAdded({
+  items,
+  activeItemId,
+  isPlaying,
+  onPlay,
+}: {
+  items: LoadedAudioItem[]
+  activeItemId: string | null
+  isPlaying: boolean
+  onPlay: (item: LoadedAudioItem) => void
+}) {
+  const theme = useTheme()
+
+  return (
+    <YStack gap={Spacing.two}>
+      <YStack gap={Spacing.half}>
+        <ThemedText type="heading">Recently added</ThemedText>
+        <ThemedText type="metadata" themeColor="textSecondary">
+          Fresh arrivals in your library.
+        </ThemedText>
+      </YStack>
+      {items.map((item) => {
+        const title = getAudioItemTitle(item)
+        const isActive = activeItemId === item.id
+
+        return (
+          <ThemedView
+            key={item.id}
+            type="backgroundElement"
+            flexDirection="row"
+            alignItems="center"
+            gap={Spacing.two}
+            padding={Spacing.two}
+            borderWidth={1}
+            borderColor="$borderColor"
+            borderRadius={Radius.medium}
+          >
+            <EpisodeArtwork
+              imageUrl={item.metadata.coverArtUrl}
+              itemId={item.id}
+              name={title}
+              size={44}
+            />
+            <YStack flex={1} minWidth={0} gap={2}>
+              <ThemedText type="smallBold" numberOfLines={1}>
+                {title}
+              </ThemedText>
+              <ThemedText
+                type="metadata"
+                themeColor="textSecondary"
+                numberOfLines={1}
+              >
+                {formatEpisodeDate(item.addedAt)}
+                {item.durationSeconds !== null
+                  ? ` · ${formatPlaybackTime(item.durationSeconds)}`
+                  : null}
+              </ThemedText>
+            </YStack>
+            <AppButton
+              tone="icon"
+              accessibilityLabel={
+                isActive && isPlaying
+                  ? `Pause ${title}`
+                  : `Play ${title}`
+              }
+              onPress={() => onPlay(item)}
+              minHeight={44}
+              minWidth={44}
+            >
+              <SymbolView
+                name={isActive && isPlaying ? PAUSE_ICON : PLAY_ICON}
+                size={20}
+                tintColor={theme.text}
+                weight="bold"
+              />
+            </AppButton>
+          </ThemedView>
+        )
+      })}
+    </YStack>
+  )
+})
+
+const StatChip = memo(function StatChip({
+  label,
+  value,
+}: {
+  label: string
+  value: string
+}) {
   return (
     <ThemedView
       type="backgroundElement"
@@ -1000,40 +1593,7 @@ function StatChip({ label, value }: { label: string; value: string }) {
       </ThemedText>
     </ThemedView>
   )
-}
-
-function ToastMessage({
-  message,
-  hasPlayer,
-}: {
-  message: string
-  hasPlayer: boolean
-}) {
-  return (
-    <ThemedView
-      accessibilityLiveRegion="polite"
-      accessibilityRole="alert"
-      type="backgroundSelected"
-      position="absolute"
-      right={Spacing.four}
-      bottom={(hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four}
-      left={Spacing.four}
-      maxWidth={560}
-      alignSelf="center"
-      paddingHorizontal={Spacing.four}
-      paddingVertical={Spacing.three}
-      borderWidth={1}
-      borderColor="$borderColor"
-      borderRadius={Radius.medium}
-      boxShadow="0 10px 24px rgba(0,0,0,0.24)"
-      $compact={{ right: Spacing.two, left: Spacing.two }}
-    >
-      <ThemedText type="smallBold" textAlign="center">
-        {message}
-      </ThemedText>
-    </ThemedView>
-  )
-}
+})
 
 type AddAudioButtonProps = {
   disabled: boolean
@@ -1115,6 +1675,21 @@ const ADD_ICON: SymbolViewProps['name'] = {
   ios: 'plus',
   android: 'add',
   web: 'add',
+}
+const RESUME_ICON: SymbolViewProps['name'] = {
+  ios: 'play.fill',
+  android: 'play_arrow',
+  web: 'play_arrow',
+}
+const PLAY_ICON: SymbolViewProps['name'] = {
+  ios: 'play.fill',
+  android: 'play_arrow',
+  web: 'play_arrow',
+}
+const PAUSE_ICON: SymbolViewProps['name'] = {
+  ios: 'pause.fill',
+  android: 'pause',
+  web: 'pause',
 }
 const LIBRARY_ICON: SymbolViewProps['name'] = {
   ios: 'headphones',

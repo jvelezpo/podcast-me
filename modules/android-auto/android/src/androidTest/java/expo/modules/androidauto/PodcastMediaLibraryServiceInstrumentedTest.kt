@@ -284,9 +284,23 @@ class PodcastMediaLibraryServiceInstrumentedTest {
           browser.sendCustomCommand(controls.first().sessionCommand!!, Bundle.EMPTY)
         }.get(10, TimeUnit.SECONDS).resultCode,
       )
+      // Next/Prev track controls are exposed so car buttons, BT/headset
+      // double-press, and lock-screen controls can traverse the queue.
       assertEquals(
-        false,
+        true,
         onMainThread { browser.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) },
+      )
+      assertEquals(
+        true,
+        onMainThread { browser.isCommandAvailable(Player.COMMAND_SEEK_TO_NEXT) },
+      )
+      assertEquals(
+        true,
+        onMainThread { browser.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) },
+      )
+      assertEquals(
+        true,
+        onMainThread { browser.isCommandAvailable(Player.COMMAND_SEEK_TO_PREVIOUS) },
       )
 
       val categories = onMainThread {

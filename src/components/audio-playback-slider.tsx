@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   PanResponder,
+  Pressable,
   type AccessibilityActionEvent,
   type LayoutChangeEvent,
 } from 'react-native';
@@ -11,6 +12,7 @@ import { View, XStack, YStack } from 'tamagui';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
+import { useReducedMotion } from '@/hooks/use-reduced-motion';
 import { useTheme } from '@/hooks/use-theme';
 import { formatPlaybackTime } from '@/utils/audio-display';
 
@@ -27,6 +29,14 @@ type AudioPlaybackSliderProps = {
 
 type ScrubRate = 0.1 | 1 | 3;
 type ScrubDirection = -1 | 0 | 1;
+
+type TimeDisplayMode = 'remaining' | 'elapsed' | 'total';
+
+const TIME_DISPLAY_MODES: readonly TimeDisplayMode[] = [
+  'remaining',
+  'elapsed',
+  'total',
+];
 
 const ACCESSIBILITY_SEEK_SECONDS = 15;
 const HORIZONTAL_INTENT_THRESHOLD = 3;
@@ -64,8 +74,13 @@ export function AudioPlaybackSlider({
   const [isSettling, setIsSettling] = useState(false);
   const [scrubRate, setScrubRate] = useState<ScrubRate>(1);
   const [scrubDirection, setScrubDirection] = useState<ScrubDirection>(0);
+  const [timeDisplayMode, setTimeDisplayMode] =
+    useState<TimeDisplayMode>('remaining');
   const [thumbVisibility] = useState(() => new Animated.Value(0));
   const [trackProminence] = useState(() => new Animated.Value(0));
+  const reduceMotion = useReducedMotion();
+  const reduceMotionRef = useRef(reduceMotion);
+  reduceMotionRef.current = reduceMotion;
   const isPreviewing = previewSeconds !== null;
   const isPrecisionScrubbing = isScrubbing && scrubRate === 0.1;
 
@@ -86,14 +101,21 @@ export function AudioPlaybackSlider({
   ]);
 
   useEffect(() => {
+    const target = isPrecisionScrubbing ? 2 : isScrubbing ? 1 : 0;
+
+    if (reduceMotion) {
+      trackProminence.setValue(target);
+      return;
+    }
+
     Animated.spring(trackProminence, {
-      toValue: isPrecisionScrubbing ? 2 : isScrubbing ? 1 : 0,
+      toValue: target,
       damping: 22,
       stiffness: 260,
       mass: 0.7,
       useNativeDriver: true,
     }).start();
-  }, [isPrecisionScrubbing, isScrubbing, trackProminence]);
+  }, [isPrecisionScrubbing, isScrubbing, trackProminence, reduceMotion]);
 
   // The native responder must stay stable while playback status rerenders this row.
   // eslint-disable-next-line react-hooks/preserve-manual-memoization
@@ -111,12 +133,17 @@ export function AudioPlaybackSlider({
       setIsScrubbing(false);
       setScrubRate(1);
       setScrubDirection(0);
-      Animated.timing(thumbVisibility, {
-        toValue: 0,
-        duration: 140,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-      }).start();
+
+      if (reduceMotionRef.current) {
+        thumbVisibility.setValue(0);
+      } else {
+        Animated.timing(thumbVisibility, {
+          toValue: 0,
+          duration: 140,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }).start();
+      }
 
       if (target !== null) {
         void (async () => {
@@ -172,13 +199,18 @@ export function AudioPlaybackSlider({
         setScrubRate(1);
         setScrubDirection(0);
         thumbVisibility.stopAnimation();
-        Animated.spring(thumbVisibility, {
-          toValue: 1,
-          damping: 16,
-          stiffness: 280,
-          mass: 0.55,
-          useNativeDriver: true,
-        }).start();
+
+        if (reduceMotionRef.current) {
+          thumbVisibility.setValue(1);
+        } else {
+          Animated.spring(thumbVisibility, {
+            toValue: 1,
+            damping: 16,
+            stiffness: 280,
+            mass: 0.55,
+            useNativeDriver: true,
+          }).start();
+        }
       },
       onPanResponderMove: (event) => {
         const duration = durationRef.current;
@@ -234,8 +266,14 @@ export function AudioPlaybackSlider({
   const safeDuration = durationSeconds ?? 0;
   const playedProgress = safeDuration > 0 ? currentPosition / safeDuration : 0;
   const previewProgress = safeDuration > 0 ? displayPosition / safeDuration : 0;
+  // expo-audio does not expose a buffered position, so callers must pass a
+  // real value or null. A null value hides this layer instead of faking it.
+  const showBufferedLayer =
+    bufferedSeconds !== null && Number.isFinite(bufferedSeconds);
   const bufferedProgress =
-    safeDuration > 0 ? clamp(bufferedSeconds ?? 0, 0, safeDuration) / safeDuration : 0;
+    safeDuration > 0 && showBufferedLayer
+      ? clamp(bufferedSeconds ?? 0, 0, safeDuration) / safeDuration
+      : 0;
   const tooltipEdgeInset =
     trackWidth > 0 ? Math.min(SCRUB_TOOLTIP_WIDTH / 2 / trackWidth, 0.5) : 0;
   const tooltipProgress = clamp(previewProgress, tooltipEdgeInset, 1 - tooltipEdgeInset);
@@ -247,11 +285,26 @@ export function AudioPlaybackSlider({
     durationSeconds === null
       ? '--:--'
       : formatPlaybackTime(Math.max(0, durationSeconds - displayPosition));
+  const timeDisplay = getTimeDisplayText(
+    timeDisplayMode,
+    previewTimeText,
+    remainingTimeText,
+    totalTimeText,
+    durationSeconds === null
+  );
 
   const handleLayout = (event: LayoutChangeEvent) => {
     const width = event.nativeEvent.layout.width;
     trackWidthRef.current = width;
     setTrackWidth(width);
+  };
+
+  const cycleTimeDisplayMode = () => {
+    setTimeDisplayMode((previous) => {
+      const nextIndex =
+        (TIME_DISPLAY_MODES.indexOf(previous) + 1) % TIME_DISPLAY_MODES.length;
+      return TIME_DISPLAY_MODES[nextIndex];
+    });
   };
 
   const handleAccessibilityAction = (event: AccessibilityActionEvent) => {
@@ -349,16 +402,18 @@ export function AudioPlaybackSlider({
               },
             ],
           }}>
-          <View
-            position="absolute"
-            top={0}
-            bottom={0}
-            left={0}
-            width={`${bufferedProgress * 100}%`}
-            borderRadius={4}
-            backgroundColor={theme.textSecondary}
-            opacity={0.32}
-          />
+          {showBufferedLayer && (
+            <View
+              position="absolute"
+              top={0}
+              bottom={0}
+              left={0}
+              width={`${bufferedProgress * 100}%`}
+              borderRadius={4}
+              backgroundColor={theme.textSecondary}
+              opacity={0.32}
+            />
+          )}
           <View
             position="absolute"
             top={0}
@@ -437,16 +492,36 @@ export function AudioPlaybackSlider({
         </Animated.View>
       </View>
 
-      <XStack justifyContent="space-between" alignItems="center">
-        <ThemedText type="smallBold" color={isScrubbing ? theme.accent : theme.text}>
-          {currentTimeText}
-        </ThemedText>
-        <ThemedText type="small" themeColor="textSecondary">
-          {durationSeconds === null
-            ? '--:--  ·  --:--'
-            : `−${remainingTimeText}  ·  ${totalTimeText}`}
-        </ThemedText>
-      </XStack>
+      <Pressable
+        accessible
+        accessibilityHint="Switches between remaining, elapsed, and total time."
+        accessibilityLabel="Time display"
+        accessibilityRole="button"
+        accessibilityState={{ disabled: durationSeconds === null }}
+        accessibilityValue={{ text: timeDisplay.accessibilityText }}
+        disabled={durationSeconds === null}
+        hitSlop={8}
+        onPress={cycleTimeDisplayMode}
+        style={({ pressed }) => ({
+          minHeight: 44,
+          justifyContent: 'center',
+          opacity: pressed ? 0.6 : 1,
+        })}>
+        <XStack justifyContent="space-between" alignItems="center">
+          <ThemedText
+            type="smallBold"
+            color={isScrubbing ? theme.accent : theme.text}
+            maxFontSizeMultiplier={2}>
+            {currentTimeText}
+          </ThemedText>
+          <ThemedText
+            type="small"
+            themeColor="textSecondary"
+            maxFontSizeMultiplier={2}>
+            {timeDisplay.visibleText}
+          </ThemedText>
+        </XStack>
+      </Pressable>
 
       {!disabled && (
         isScrubbing ? (
@@ -472,12 +547,46 @@ export function AudioPlaybackSlider({
           </XStack>
         ) : (
           <ThemedText type="small" themeColor="textSecondary">
-            Drag to seek · pull up for precision
+            Drag to seek · pull up for precision · tap the time to switch views
           </ThemedText>
         )
       )}
     </YStack>
   );
+}
+
+function getTimeDisplayText(
+  mode: TimeDisplayMode,
+  elapsedText: string,
+  remainingText: string,
+  totalText: string,
+  isUnknown: boolean
+): { visibleText: string; accessibilityText: string } {
+  if (isUnknown) {
+    return {
+      visibleText: '--:--  ·  --:--',
+      accessibilityText: 'Time unavailable',
+    };
+  }
+
+  switch (mode) {
+    case 'elapsed':
+      return {
+        visibleText: `${elapsedText}  ·  ${totalText}`,
+        accessibilityText: `Showing elapsed time, ${elapsedText} of ${totalText}`,
+      };
+    case 'total':
+      return {
+        visibleText: totalText,
+        accessibilityText: `Showing total time, ${totalText}`,
+      };
+    case 'remaining':
+    default:
+      return {
+        visibleText: `−${remainingText}  ·  ${totalText}`,
+        accessibilityText: `Showing remaining time, ${remainingText} left of ${totalText}`,
+      };
+  }
 }
 
 function getScrubRate(verticalDistance: number): ScrubRate {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   createPlaylistId,
@@ -356,19 +356,38 @@ export function usePlaylists() {
     [persist]
   );
 
-  return {
-    playlists,
-    isLoading,
-    isMutating,
-    notice,
-    createPlaylist,
-    renamePlaylist,
-    deletePlaylist,
-    addToPlaylist,
-    removeFromPlaylist,
-    reorderPlaylistItem,
-    movePlaylistItem,
-    pruneLocalAudio,
-    dismissNotice: () => setNotice(null),
-  };
+  const dismissNotice = useCallback(() => setNotice(null), []);
+
+  return useMemo(
+    () => ({
+      playlists,
+      isLoading,
+      isMutating,
+      notice,
+      createPlaylist,
+      renamePlaylist,
+      deletePlaylist,
+      addToPlaylist,
+      removeFromPlaylist,
+      reorderPlaylistItem,
+      movePlaylistItem,
+      pruneLocalAudio,
+      dismissNotice,
+    }),
+    [
+      playlists,
+      isLoading,
+      isMutating,
+      notice,
+      createPlaylist,
+      renamePlaylist,
+      deletePlaylist,
+      addToPlaylist,
+      removeFromPlaylist,
+      reorderPlaylistItem,
+      movePlaylistItem,
+      pruneLocalAudio,
+      dismissNotice,
+    ],
+  );
 }

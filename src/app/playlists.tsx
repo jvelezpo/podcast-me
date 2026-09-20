@@ -2,11 +2,10 @@ import { useNetworkState } from 'expo-network'
 import { useRouter } from 'expo-router'
 import { SymbolView, type SymbolViewProps } from 'expo-symbols'
 import { useState } from 'react'
-import { Alert, FlatList, Modal, StyleSheet, TextInput } from 'react-native'
+import { Alert, FlatList, StyleSheet, TextInput } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
-import { PlaylistDetailContent } from '@/components/playlist-detail-content'
 import { PlaylistRow } from '@/components/playlist-row'
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
@@ -32,7 +31,6 @@ export default function PlaylistsScreen() {
   const [newName, setNewName] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
-  const [openPlaylistId, setOpenPlaylistId] = useState<string | null>(null)
   const isOnline = networkState.isConnected !== false
   const hasPlayer = playback.activeItemId !== null
 
@@ -53,9 +51,9 @@ export default function PlaylistsScreen() {
   }
 
   const handleOpen = (playlist: Playlist) => {
-    // Tapping a playlist opens its audios immediately as a modal view,
-    // so it works identically on native and web without relying on stack pushes.
-    setOpenPlaylistId(playlist.id)
+    // Playlist detail is a real route (`/playlist/[id]`) so Android back
+    // returns to the list and URLs are shareable / deep-linkable.
+    router.push(`/playlist/${playlist.id}`)
   }
 
   const confirmDelete = (playlist: Playlist) => {
@@ -282,24 +280,6 @@ export default function PlaylistsScreen() {
             </ThemedText>
           </ThemedView>
         )}
-        <Modal
-          animationType="slide"
-          presentationStyle="fullScreen"
-          visible={openPlaylistId !== null}
-          onRequestClose={() => setOpenPlaylistId(null)}
-        >
-          {openPlaylistId && (
-            <PlaylistDetailContent
-              playlistId={openPlaylistId}
-              onClose={() => setOpenPlaylistId(null)}
-              onOpenLibrary={() => {
-                setOpenPlaylistId(null)
-                router.push('/')
-              }}
-              onDeleted={() => setOpenPlaylistId(null)}
-            />
-          )}
-        </Modal>
       </SafeAreaView>
     </ThemedView>
   )

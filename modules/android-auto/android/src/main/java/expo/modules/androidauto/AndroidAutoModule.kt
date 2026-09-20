@@ -72,6 +72,10 @@ class AndroidAutoModule : Module() {
       PodcastMediaLibraryService.setPlaybackRateFromPhone(rate.toFloat())
     }.runOnQueue(Queues.MAIN)
 
+    AsyncFunction("setVolume") { volume: Double ->
+      PodcastMediaLibraryService.setVolumeFromPhone(volume.toFloat())
+    }.runOnQueue(Queues.MAIN)
+
     AsyncFunction("dismissPlayback") {
       PodcastMediaLibraryService.dismissFromPhone()
     }.runOnQueue(Queues.MAIN)

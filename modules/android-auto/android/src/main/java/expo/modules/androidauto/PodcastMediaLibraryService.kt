@@ -323,6 +323,12 @@ class PodcastMediaLibraryService : MediaLibraryService() {
     return true
   }
 
+  private fun setVolumeFromPhone(volume: Float): Boolean {
+    if (!::player.isInitialized || player.currentMediaItem == null) return false
+    player.volume = volume.coerceIn(0f, 1f)
+    return true
+  }
+
   private fun dismissFromPhone(): Boolean {
     if (player.currentMediaItem == null) return false
     persistCurrentPlayback()
@@ -376,12 +382,16 @@ class PodcastMediaLibraryService : MediaLibraryService() {
         .add(seekBack15Command)
         .add(seekForward15Command)
         .build()
+      // The player holds the full catalog as its playlist, so native
+      // seek-to-next/previous (car buttons, BT/headset double-press,
+      // lock-screen controls) advances within library order. No
+      // shuffle/repeat commands are exposed.
       val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS
         .buildUpon()
-        .remove(Player.COMMAND_SEEK_TO_PREVIOUS)
-        .remove(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
-        .remove(Player.COMMAND_SEEK_TO_NEXT)
-        .remove(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+        .add(Player.COMMAND_SEEK_TO_PREVIOUS)
+        .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+        .add(Player.COMMAND_SEEK_TO_NEXT)
+        .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
         .build()
 
       return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
@@ -644,6 +654,9 @@ class PodcastMediaLibraryService : MediaLibraryService() {
 
     fun setPlaybackRateFromPhone(rate: Float): Boolean =
       activeService?.get()?.setPlaybackRateFromPhone(rate) ?: false
+
+    fun setVolumeFromPhone(volume: Float): Boolean =
+      activeService?.get()?.setVolumeFromPhone(volume) ?: false
 
     fun dismissFromPhone(): Boolean =
       activeService?.get()?.dismissFromPhone() ?: false

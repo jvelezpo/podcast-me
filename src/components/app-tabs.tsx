@@ -38,14 +38,6 @@ export default function AppTabs() {
         />
       </NativeTabs.Trigger>
 
-      <NativeTabs.Trigger name="explore" disableTransparentOnScrollEdge>
-        <NativeTabs.Trigger.Label>Discover</NativeTabs.Trigger.Label>
-        <NativeTabs.Trigger.Icon
-          sf={{ default: 'safari', selected: 'safari.fill' }}
-          md={{ default: 'explore', selected: 'explore' }}
-        />
-      </NativeTabs.Trigger>
-
       <NativeTabs.Trigger name="search" disableTransparentOnScrollEdge>
         <NativeTabs.Trigger.Label>Search</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon
