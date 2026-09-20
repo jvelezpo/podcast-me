@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from 'react'
 import {
   Animated,
@@ -21,7 +20,7 @@ import { AudioPlaybackSlider } from '@/components/audio-playback-slider'
 import { EpisodeArtwork } from '@/components/episode-artwork'
 import { PlayerSheet } from '@/components/player-sheet'
 import { QueueSheet } from '@/components/queue-sheet'
-import { SleepTimerCard } from '@/components/sleep-timer-card'
+import { SleepTimerSheet } from '@/components/sleep-timer-sheet'
 import { SpeedSheet } from '@/components/speed-sheet'
 import { SwipeableArtwork } from '@/components/swipeable-artwork'
 import { ThemedText } from '@/components/themed-text'
@@ -91,6 +90,7 @@ export function GlobalPlayer() {
   const [playerWidth, setPlayerWidth] = useState(0)
   const [isQueueOpen, setIsQueueOpen] = useState(false)
   const [isSpeedOpen, setIsSpeedOpen] = useState(false)
+  const [isSleepOpen, setIsSleepOpen] = useState(false)
   const canSwipeRef = useRef(false)
   const playerWidthRef = useRef(0)
   const wasPlayingBeforeScrubRef = useRef(false)
@@ -354,7 +354,6 @@ export function GlobalPlayer() {
   }, [swipeOffset])
 
   const clearSleepTimer = useCallback(() => {
-    impactLight()
     consumeEndOfEpisodeHold()
     sleepTimer.clearSleepTimer()
     // A cleared timer must never leave faded volume behind.
@@ -370,37 +369,76 @@ export function GlobalPlayer() {
 
   const handleSetSleepMinutes = useCallback(
     (minutes: number) => {
-      impactLight()
       sleepTimer.handleSetSleepTimer(minutes)
     },
     [sleepTimer],
   )
 
   const handleArmEndOfEpisode = useCallback(() => {
-    impactLight()
     armEndOfEpisode()
   }, [armEndOfEpisode])
 
   const handleOpenQueue = useCallback(() => setIsQueueOpen(true), [])
   const handleCloseQueue = useCallback(() => setIsQueueOpen(false), [])
+  const handleOpenSleep = useCallback(() => {
+    impactLight()
+    setIsSleepOpen(true)
+  }, [])
+  const handleCloseSleep = useCallback(() => setIsSleepOpen(false), [])
 
-  const sleepTimerCard = useMemo(
-    () => (
-      <SleepTimerCard
-        endsAt={sleepTimer.sleepTimerEndsAt}
-        durationMinutes={sleepTimer.sleepTimerDurationMinutes}
-        remaining={sleepTimer.sleepTimerRemaining}
-        endOfEpisodeArmed={endOfEpisodeArmed}
-        onSetMinutes={handleSetSleepMinutes}
-        onSetEndOfEpisode={handleArmEndOfEpisode}
-        onClear={clearSleepTimer}
-      />
-    ),
+  const sleepIsActive = useMemo(
+    () => sleepTimer.sleepTimerEndsAt !== null || endOfEpisodeArmed,
+    [endOfEpisodeArmed, sleepTimer.sleepTimerEndsAt],
+  )
+  const sleepTriggerLabel = useMemo(() => {
+    if (sleepTimer.sleepTimerRemaining !== null) {
+      return sleepTimer.sleepTimerRemaining
+    }
+
+    if (endOfEpisodeArmed) {
+      return 'End of episode'
+    }
+
+    return 'Sleep'
+  }, [endOfEpisodeArmed, sleepTimer.sleepTimerRemaining])
+
+  const handleSelectSleepMinutes = useCallback(
+    (minutes: number) => {
+      handleSetSleepMinutes(minutes)
+      setIsSleepOpen(false)
+    },
+    [handleSetSleepMinutes],
+  )
+
+  const handleSelectEndOfEpisode = useCallback(() => {
+    handleArmEndOfEpisode()
+    setIsSleepOpen(false)
+  }, [handleArmEndOfEpisode])
+
+  const sleepSheet = useMemo(
+    () =>
+      isSleepOpen ? (
+        <SleepTimerSheet
+          endsAt={sleepTimer.sleepTimerEndsAt}
+          durationMinutes={sleepTimer.sleepTimerDurationMinutes}
+          remaining={sleepTimer.sleepTimerRemaining}
+          endOfEpisodeArmed={endOfEpisodeArmed}
+          onSetMinutes={handleSelectSleepMinutes}
+          onSetEndOfEpisode={handleSelectEndOfEpisode}
+          onClear={() => {
+            clearSleepTimer()
+            setIsSleepOpen(false)
+          }}
+          onClose={handleCloseSleep}
+        />
+      ) : null,
     [
       clearSleepTimer,
       endOfEpisodeArmed,
-      handleArmEndOfEpisode,
-      handleSetSleepMinutes,
+      handleCloseSleep,
+      handleSelectEndOfEpisode,
+      handleSelectSleepMinutes,
+      isSleepOpen,
       sleepTimer.sleepTimerDurationMinutes,
       sleepTimer.sleepTimerEndsAt,
       sleepTimer.sleepTimerRemaining,
@@ -520,9 +558,16 @@ export function GlobalPlayer() {
           onSkipToPrevious={skipToPrevious}
           openPlayer={openRemotePlayer}
           remotePlayback={remotePlayback}
-          sleepTimerCard={sleepTimerCard}
+          sleepEndsAt={sleepTimer.sleepTimerEndsAt}
+          sleepDurationMinutes={sleepTimer.sleepTimerDurationMinutes}
+          sleepRemaining={sleepTimer.sleepTimerRemaining}
+          endOfEpisodeArmed={endOfEpisodeArmed}
+          onSetSleepMinutes={handleSetSleepMinutes}
+          onSetEndOfEpisode={handleArmEndOfEpisode}
+          onClearSleep={clearSleepTimer}
         />
         {queueSheet}
+        {sleepSheet}
       </>
     )
   }
@@ -838,17 +883,25 @@ export function GlobalPlayer() {
               width="100%"
               alignItems="center"
               justifyContent="space-between"
+              gap={Spacing.two}
             >
-              <AppButton
-                tone="secondary"
-                accessibilityLabel={`Playback speed ${playback.playbackRate} times`}
-                accessibilityHint="Opens speed options from half to triple speed"
-                onPress={() => setIsSpeedOpen(true)}
-              >
-                <ThemedText type="smallBold">
-                  {playback.playbackRate}× speed
-                </ThemedText>
-              </AppButton>
+              <XStack alignItems="center" gap={Spacing.two} flexShrink={0}>
+                <AppButton
+                  tone="secondary"
+                  accessibilityLabel={`Playback speed ${playback.playbackRate} times`}
+                  accessibilityHint="Opens speed options from half to triple speed"
+                  onPress={() => setIsSpeedOpen(true)}
+                >
+                  <ThemedText type="smallBold">
+                    {playback.playbackRate}× speed
+                  </ThemedText>
+                </AppButton>
+                <SleepTriggerButton
+                  active={sleepIsActive}
+                  label={sleepTriggerLabel}
+                  onPress={handleOpenSleep}
+                />
+              </XStack>
               <YStack alignItems="flex-end" flexShrink={1}>
                 <ThemedText
                   type="metadata"
@@ -935,8 +988,6 @@ export function GlobalPlayer() {
               </ThemedText>
             </XStack>
           </YStack>
-
-          {sleepTimerCard}
         </YStack>
       </PlayerSheet>
       {isSpeedOpen && (
@@ -949,6 +1000,7 @@ export function GlobalPlayer() {
           }}
         />
       )}
+      {sleepSheet}
       {queueSheet}
     </>
   )
@@ -962,7 +1014,13 @@ type RemotePlayerSurfaceProps = {
   onSkipToNext: () => void
   onSkipToPrevious: () => void
   openPlayer: (audio: RemoteAudio) => void
-  sleepTimerCard: ReactNode
+  sleepEndsAt: number | null
+  sleepDurationMinutes: number | null
+  sleepRemaining: string | null
+  endOfEpisodeArmed: boolean
+  onSetSleepMinutes: (minutes: number) => void
+  onSetEndOfEpisode: () => void
+  onClearSleep: () => void
   remotePlayback: {
     activeAudio: RemoteAudio | null
     currentPositionSeconds: number
@@ -992,12 +1050,22 @@ function RemotePlayerSurface({
   onSkipToPrevious,
   openPlayer,
   remotePlayback,
-  sleepTimerCard,
+  sleepEndsAt,
+  sleepDurationMinutes,
+  sleepRemaining,
+  endOfEpisodeArmed,
+  onSetSleepMinutes,
+  onSetEndOfEpisode,
+  onClearSleep,
 }: RemotePlayerSurfaceProps) {
   const media = useMedia()
   const theme = useTheme()
   const wasPlayingBeforeScrubRef = useRef(false)
   const [isSpeedOpen, setIsSpeedOpen] = useState(false)
+  const [isSleepOpen, setIsSleepOpen] = useState(false)
+  const sleepActive = sleepEndsAt !== null || endOfEpisodeArmed
+  const sleepLabel =
+    sleepRemaining ?? (endOfEpisodeArmed ? 'End of episode' : 'Sleep')
   const isActive = remotePlayback.activeAudio?.id === audio.id
   const duration = isActive ? remotePlayback.durationSeconds : null
   const positionSeconds = isActive ? remotePlayback.currentPositionSeconds : 0
@@ -1332,16 +1400,30 @@ function RemotePlayerSurface({
             </XStack>
             <LongPressHint visible={(duration ?? 0) > 3_600} />
 
-            <AppButton
-              tone="secondary"
-              accessibilityLabel={`Playback speed ${remotePlayback.playbackRate} times`}
-              accessibilityHint="Opens speed options from half to triple speed"
-              onPress={() => setIsSpeedOpen(true)}
+            <XStack
+              width="100%"
+              alignItems="center"
+              gap={Spacing.two}
             >
-              <ThemedText type="smallBold">
-                {remotePlayback.playbackRate}× speed
-              </ThemedText>
-            </AppButton>
+              <AppButton
+                tone="secondary"
+                accessibilityLabel={`Playback speed ${remotePlayback.playbackRate} times`}
+                accessibilityHint="Opens speed options from half to triple speed"
+                onPress={() => setIsSpeedOpen(true)}
+              >
+                <ThemedText type="smallBold">
+                  {remotePlayback.playbackRate}× speed
+                </ThemedText>
+              </AppButton>
+              <SleepTriggerButton
+                active={sleepActive}
+                label={sleepLabel}
+                onPress={() => {
+                  impactLight()
+                  setIsSleepOpen(true)
+                }}
+              />
+            </XStack>
           </YStack>
         }
       >
@@ -1408,8 +1490,6 @@ function RemotePlayerSurface({
               </ThemedText>
             </XStack>
           </YStack>
-
-          {sleepTimerCard}
         </YStack>
       </PlayerSheet>
       {isSpeedOpen && (
@@ -1420,6 +1500,27 @@ function RemotePlayerSurface({
             remotePlayback.setPlaybackRate(rate, getShowKey(audio.metadata))
             setIsSpeedOpen(false)
           }}
+        />
+      )}
+      {isSleepOpen && (
+        <SleepTimerSheet
+          endsAt={sleepEndsAt}
+          durationMinutes={sleepDurationMinutes}
+          remaining={sleepRemaining}
+          endOfEpisodeArmed={endOfEpisodeArmed}
+          onSetMinutes={(minutes) => {
+            onSetSleepMinutes(minutes)
+            setIsSleepOpen(false)
+          }}
+          onSetEndOfEpisode={() => {
+            onSetEndOfEpisode()
+            setIsSleepOpen(false)
+          }}
+          onClear={() => {
+            onClearSleep()
+            setIsSleepOpen(false)
+          }}
+          onClose={() => setIsSleepOpen(false)}
         />
       )}
     </>
@@ -1468,6 +1569,55 @@ const PlayerIconButton = memo(function PlayerIconButton({
           weight="bold"
         />
       )}
+    </AppButton>
+  )
+})
+
+/**
+ * Compact Spotify-style sleep trigger pinned next to the transport: a moon
+ * pill showing `Sleep` when idle or the live remaining label
+ * (`5m left`, `End of episode`) when armed. Opens the sleep timer sheet.
+ */
+const SleepTriggerButton = memo(function SleepTriggerButton({
+  active,
+  label,
+  onPress,
+}: {
+  active: boolean
+  label: string
+  onPress: () => void
+}) {
+  const theme = useTheme()
+
+  return (
+    <AppButton
+      tone="secondary"
+      accessibilityLabel={
+        active
+          ? `Sleep timer ${label}, open sleep timer options`
+          : 'Open sleep timer options'
+      }
+      accessibilityHint="Choose when playback should pause"
+      accessibilityState={{ selected: active }}
+      onPress={onPress}
+      minHeight={44}
+      paddingHorizontal={Spacing.three}
+      borderColor={active ? '$accent' : '$backgroundSelected'}
+      backgroundColor={active ? '$accentSubtle' : '$backgroundSelected'}
+    >
+      <SymbolView
+        name={SLEEP_ICON}
+        size={16}
+        tintColor={active ? theme.accent : theme.textSecondary}
+        weight="semibold"
+      />
+      <ThemedText
+        type="smallBold"
+        color={active ? theme.accent : theme.text}
+        maxFontSizeMultiplier={2}
+      >
+        {label}
+      </ThemedText>
     </AppButton>
   )
 })
@@ -1700,4 +1850,9 @@ const NEXT_ICON: SymbolViewProps['name'] = {
   ios: 'forward.end.fill',
   android: 'skip_next',
   web: 'skip_next',
+}
+const SLEEP_ICON: SymbolViewProps['name'] = {
+  ios: 'moon.zzz.fill',
+  android: 'bedtime',
+  web: 'bedtime',
 }
