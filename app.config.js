@@ -36,7 +36,7 @@ module.exports = ({ config: productionConfig }) => ({
       ? {
           backgroundColor: '#260063',
           foregroundImage: './assets/images/podcast-me-dev-foreground.png',
-          monochromeImage: './assets/images/podcast-me-dev-foreground.png',
+          monochromeImage: './assets/images/podcast-me-monochrome-v2.png',
         }
       : productionConfig.android.adaptiveIcon,
   },

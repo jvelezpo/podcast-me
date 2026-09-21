@@ -7,7 +7,11 @@
     "scheme": "podcastme",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "bundleIdentifier": "com.podcastme.app"
+      "bundleIdentifier": "com.podcastme.app",
+      "icon": {
+        "light": "./assets/images/podcast-me-icon.png",
+        "dark": "./assets/images/podcast-me-icon-dark.png"
+      }
     },
     "android": {
       "package": "com.podcastme.app",
@@ -16,6 +20,7 @@
       "icon": "./assets/images/podcast-me-icon-android-v2.png",
       "adaptiveIcon": {
         "backgroundColor": "#06142B",
+        "backgroundImage": "./assets/images/podcast-me-background-v2.png",
         "foregroundImage": "./assets/images/podcast-me-foreground-v2.png",
         "monochromeImage": "./assets/images/podcast-me-monochrome-v2.png"
       },
@@ -33,7 +38,7 @@
         {
           "backgroundColor": "#06142B",
           "image": "./assets/images/podcast-me-foreground.png",
-          "imageWidth": 76
+          "imageWidth": 128
         }
       ],
       [
