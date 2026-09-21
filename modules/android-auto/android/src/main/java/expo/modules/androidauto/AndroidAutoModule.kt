@@ -60,6 +60,14 @@ class AndroidAutoModule : Module() {
       )
     }.runOnQueue(Queues.MAIN)
 
+    AsyncFunction("prepareItem") { mediaId: String, positionSeconds: Double, rate: Double ->
+      PodcastMediaLibraryService.prepareFromPhone(
+        mediaId,
+        positionSeconds.toMilliseconds(),
+        rate.toFloat(),
+      )
+    }.runOnQueue(Queues.MAIN)
+
     AsyncFunction("pausePlayback") {
       PodcastMediaLibraryService.pauseFromPhone()
     }.runOnQueue(Queues.MAIN)

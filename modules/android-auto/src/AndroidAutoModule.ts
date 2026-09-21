@@ -38,6 +38,11 @@ declare class AndroidAutoNativeModule extends NativeModule<AndroidAutoEvents> {
     positionSeconds: number,
     rate: number,
   ): Promise<boolean>;
+  prepareItem(
+    mediaId: string,
+    positionSeconds: number,
+    rate: number,
+  ): Promise<boolean>;
   pausePlayback(): Promise<boolean>;
   seekTo(positionSeconds: number): Promise<boolean>;
   setPlaybackRate(rate: number): Promise<boolean>;
@@ -107,6 +112,18 @@ export async function playAndroidAutoItem(
   return (
     (await nativeModule?.playItem(mediaId, positionSeconds, rate)) ?? false
   );
+}
+
+export async function prepareAndroidAutoItem(
+  mediaId: string,
+  positionSeconds: number,
+  rate: number,
+): Promise<boolean> {
+  if (!nativeModule?.prepareItem) {
+    return false;
+  }
+
+  return (await nativeModule.prepareItem(mediaId, positionSeconds, rate)) ?? false;
 }
 
 export async function pauseAndroidAutoPlayback(): Promise<boolean> {

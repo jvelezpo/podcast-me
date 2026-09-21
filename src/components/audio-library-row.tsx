@@ -4,30 +4,31 @@ import {
   Animated,
   KeyboardAvoidingView,
   Modal,
+  View as NativeView,
   PanResponder,
   Platform,
   StyleSheet,
   TextInput,
-  type AccessibilityActionEvent,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { ScrollView, Spinner, View, XStack, YStack, styled } from 'tamagui'
+import { ScrollView, View, XStack, YStack, styled } from 'tamagui'
 
 import { EpisodeArtwork } from '@/components/episode-artwork'
+import { RowActionSheet } from '@/components/row-action-sheet'
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
 import { AppButton } from '@/components/ui/app-button'
 import { Radius, Spacing } from '@/constants/theme'
-import { useReducedMotion } from '@/hooks/use-reduced-motion'
 import type { AudioPlaybackError } from '@/hooks/use-audio-library-player'
+import { useReducedMotion } from '@/hooks/use-reduced-motion'
 import { useTheme } from '@/hooks/use-theme'
 import type { AudioMetadata } from '@/models/audio-item'
 import type { LoadedAudioItem } from '@/services/audio-library-storage'
 import {
-  getAudioItemTitle,
   formatEpisodeDate,
   formatFileSize,
   formatPlaybackTime,
+  getAudioItemTitle,
 } from '@/utils/audio-display'
 
 type AudioLibraryRowProps = {
@@ -48,14 +49,13 @@ type AudioLibraryRowProps = {
   isUploaded: boolean
   uploadProgressPercent: number | null
   uploadError: string | null
+  reorderBounds?: { min: number; max: number }
   onDelete: (item: LoadedAudioItem) => void
   onOpenPlayer: (item: LoadedAudioItem) => void
   onPlayNext: (item: LoadedAudioItem) => void
   onReorder: (itemId: string, offset: number) => void
-  onSaveMetadata: (
-    itemId: string,
-    metadata: AudioMetadata,
-  ) => Promise<boolean>
+  onPreviewReorder?: (itemId: string, offset: number) => void
+  onSaveMetadata: (itemId: string, metadata: AudioMetadata) => Promise<boolean>
   onTogglePlayback: (item: LoadedAudioItem) => void
   onUpload: (item: LoadedAudioItem) => void
   onAddToPlaylist?: (item: LoadedAudioItem) => void
@@ -79,10 +79,12 @@ export const AudioLibraryRow = memo(function AudioLibraryRow({
   isUploaded,
   uploadProgressPercent,
   uploadError,
+  reorderBounds,
   onDelete,
   onOpenPlayer,
   onPlayNext,
   onReorder,
+  onPreviewReorder,
   onSaveMetadata,
   onTogglePlayback,
   onUpload,
@@ -93,19 +95,21 @@ export const AudioLibraryRow = memo(function AudioLibraryRow({
   const [highlightProgress] = useState(() => new Animated.Value(0))
   const [isDragging, setIsDragging] = useState(false)
   const reduceMotion = useReducedMotion()
-  const reduceMotionRef = useRef(reduceMotion)
-  reduceMotionRef.current = reduceMotion
   const [isMetadataModalOpen, setIsMetadataModalOpen] = useState(false)
   const [isSheetOpen, setIsSheetOpen] = useState(false)
   const dragDisabledRef = useRef(isReorderDisabled)
   const itemIdRef = useRef(item.id)
   const onReorderRef = useRef(onReorder)
+  const onPreviewReorderRef = useRef(onPreviewReorder)
+  const reorderBoundsRef = useRef(reorderBounds)
 
   useEffect(() => {
     dragDisabledRef.current = isReorderDisabled
     itemIdRef.current = item.id
     onReorderRef.current = onReorder
-  }, [isReorderDisabled, item.id, onReorder])
+    onPreviewReorderRef.current = onPreviewReorder
+    reorderBoundsRef.current = reorderBounds
+  }, [isReorderDisabled, item.id, onPreviewReorder, onReorder, reorderBounds])
 
   useEffect(() => {
     if (duplicateHighlightToken === 0) {
@@ -149,18 +153,32 @@ export const AudioLibraryRow = memo(function AudioLibraryRow({
   }, [duplicateHighlightToken, highlightProgress, reduceMotion])
 
   const reorderResponder = useMemo(() => {
-    const canDrag = () => !dragDisabledRef.current
-    const finishDrag = (_event: unknown, gestureState: { dy: number }) => {
-      const offset = Math.round(gestureState.dy / REORDER_STEP_DISTANCE)
-      setIsDragging(false)
+    let previewOffset = 0
 
-      if (offset !== 0) {
-        dragY.setValue(0)
-        onReorderRef.current(itemIdRef.current, offset)
-        return
+    const getPreviewOffset = (dy: number) => {
+      const bounds = reorderBoundsRef.current
+
+      if (!bounds) {
+        return 0
       }
 
-      if (reduceMotionRef.current) {
+      return Math.max(
+        bounds.min,
+        Math.min(bounds.max, Math.round(dy / REORDER_STEP_DISTANCE)),
+      )
+    }
+
+    const finishDrag = () => {
+      setIsDragging(false)
+
+      if (previewOffset !== 0) {
+        onReorderRef.current(itemIdRef.current, previewOffset)
+      }
+
+      onPreviewReorderRef.current?.(itemIdRef.current, 0)
+      previewOffset = 0
+
+      if (reduceMotion) {
         dragY.setValue(0)
         return
       }
@@ -174,26 +192,38 @@ export const AudioLibraryRow = memo(function AudioLibraryRow({
       }).start()
     }
 
-    // PanResponder stores these callbacks and invokes them only for touch events.
-    // eslint-disable-next-line react-hooks/refs
     return PanResponder.create({
-      onStartShouldSetPanResponder: canDrag,
-      onStartShouldSetPanResponderCapture: canDrag,
-      onMoveShouldSetPanResponder: canDrag,
-      onMoveShouldSetPanResponderCapture: canDrag,
+      onStartShouldSetPanResponder: () =>
+        !dragDisabledRef.current && Boolean(reorderBoundsRef.current),
+      onStartShouldSetPanResponderCapture: () =>
+        !dragDisabledRef.current && Boolean(reorderBoundsRef.current),
+      onMoveShouldSetPanResponder: () =>
+        !dragDisabledRef.current && Boolean(reorderBoundsRef.current),
+      onMoveShouldSetPanResponderCapture: () =>
+        !dragDisabledRef.current && Boolean(reorderBoundsRef.current),
       onPanResponderGrant: () => {
         dragY.stopAnimation()
         dragY.setValue(0)
+        previewOffset = 0
         setIsDragging(true)
       },
-      onPanResponderMove: (_event, gestureState) =>
-        dragY.setValue(gestureState.dy),
+      onPanResponderMove: (_event, gestureState) => {
+        const nextPreviewOffset = getPreviewOffset(gestureState.dy)
+        dragY.setValue(
+          gestureState.dy - nextPreviewOffset * REORDER_STEP_DISTANCE,
+        )
+
+        if (nextPreviewOffset !== previewOffset) {
+          previewOffset = nextPreviewOffset
+          onPreviewReorderRef.current?.(itemIdRef.current, nextPreviewOffset)
+        }
+      },
       onPanResponderRelease: finishDrag,
       onPanResponderTerminate: finishDrag,
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
     })
-  }, [dragY])
+  }, [dragY, reduceMotion])
 
   const positionSeconds = isActive
     ? currentPositionSeconds
@@ -222,268 +252,256 @@ export const AudioLibraryRow = memo(function AudioLibraryRow({
     outputRange: [1, 1.018],
   })
 
-  const handleReorderAccessibilityAction = (
-    event: AccessibilityActionEvent,
-  ) => {
-    if (isReorderDisabled) {
-      return
-    }
-
-    if (event.nativeEvent.actionName === 'increment') {
-      onReorder(item.id, 1)
-    } else if (event.nativeEvent.actionName === 'decrement') {
-      onReorder(item.id, -1)
-    }
-  }
-
   return (
     <>
       <AnimatedView
         borderRadius={Radius.large}
         zIndex={isDragging ? 10 : 0}
-        opacity={isDragging ? 0.94 : 1}
-        boxShadow={isDragging ? '0 14px 28px rgba(0,0,0,0.28)' : undefined}
-        style={{ transform: [{ translateY: dragY }, { scale: highlightScale }] }}
+        opacity={isDragging ? 0.96 : 1}
+        boxShadow={isDragging ? '0 16px 32px rgba(0,0,0,0.24)' : undefined}
+        style={{
+          transform: [{ translateY: dragY }, { scale: highlightScale }],
+        }}
       >
-      <AnimatedView
-        pointerEvents="none"
-        position="absolute"
-        top={0}
-        right={0}
-        bottom={0}
-        left={0}
-        zIndex={2}
-        borderWidth={3}
-        borderRadius={Radius.large}
-        borderColor="$accent"
-        style={{ opacity: highlightProgress }}
-      />
-      <ThemedView
-        type="backgroundElement"
-        overflow="hidden"
-        borderWidth={1}
-        borderColor={isActive ? '$accent' : '$borderColor'}
-        // borderColor="red"
-        borderRadius={Radius.large}
-        boxShadow="0 8px 24px rgba(0,0,0,0.12)"
-      >
-        <XStack alignItems="center" gap={Spacing.three} padding={Spacing.three}>
-          <View
-            {...reorderResponder.panHandlers}
-            accessible
-            accessibilityActions={[
-              { name: 'decrement', label: 'Move earlier' },
-              { name: 'increment', label: 'Move later' },
-            ]}
-            accessibilityHint="Drag vertically to change the playlist position"
-            accessibilityLabel={`Reorder ${title}`}
-            accessibilityRole="adjustable"
-            accessibilityState={{ disabled: isReorderDisabled }}
-            onAccessibilityAction={handleReorderAccessibilityAction}
-            width={44}
-            minWidth={44}
-            height={44}
-            minHeight={44}
-            flexShrink={0}
+        <AnimatedView
+          pointerEvents="none"
+          position="absolute"
+          top={0}
+          right={0}
+          bottom={0}
+          left={0}
+          zIndex={2}
+          borderWidth={3}
+          borderRadius={Radius.large}
+          borderColor="$accent"
+          style={{ opacity: highlightProgress }}
+        />
+        <ThemedView
+          type="backgroundElement"
+          overflow="hidden"
+          borderWidth={1}
+          borderColor={isActive ? '$accent' : '$borderColor'}
+          // borderColor="red"
+          borderRadius={Radius.large}
+          boxShadow="0 8px 24px rgba(0,0,0,0.12)"
+        >
+          <XStack
             alignItems="center"
-            justifyContent="center"
-            borderWidth={1}
-            borderRadius={Radius.round}
-            borderColor="$borderColor"
-            backgroundColor={isDragging ? '$backgroundSelected' : 'transparent'}
-            opacity={isReorderDisabled ? 0.45 : 1}
-            cursor={isReorderDisabled ? 'not-allowed' : 'grab'}
+            gap={Spacing.three}
+            padding={Spacing.three}
           >
-            <SymbolView name={REORDER_ICON} size={20} tintColor={theme.text} />
-          </View>
-          <AppButton
-            tone="ghost"
-            accessibilityLabel={`Open player for ${title}`}
-            disabled={!isPlaybackReady || !item.isAvailable || isTransitioning}
-            onPress={() => onOpenPlayer(item)}
-            minWidth={0}
-            flex={1}
-            justifyContent="flex-start"
-            padding={0}
-          >
-            <EpisodeArtwork
-              imageUrl={item.metadata.coverArtUrl}
-              itemId={item.id}
-              name={title}
-              size={76}
-            />
+            <View
+              accessible
+              accessibilityLabel="Saved on this device"
+              width={44}
+              height={44}
+              flexShrink={0}
+              alignItems="center"
+              justifyContent="center"
+              borderRadius={Radius.round}
+              backgroundColor="$accentSubtle"
+            >
+              <SymbolView
+                name={LOCAL_ICON}
+                size={20}
+                tintColor={theme.accent}
+              />
+            </View>
+            <AppButton
+              tone="ghost"
+              accessibilityLabel={`Open player for ${title}`}
+              disabled={
+                !isPlaybackReady || !item.isAvailable || isTransitioning
+              }
+              onPress={() => onOpenPlayer(item)}
+              minWidth={0}
+              flex={1}
+              justifyContent="flex-start"
+              padding={0}
+            >
+              <EpisodeArtwork
+                imageUrl={item.metadata.coverArtUrl}
+                itemId={item.id}
+                name={title}
+                size={76}
+              />
 
-            <YStack flex={1} minWidth={0} gap={Spacing.one}>
-              <ThemedText type="episodeTitle" numberOfLines={2}>
-                {title}
-              </ThemedText>
-              <ThemedText
-                type="metadata"
-                themeColor="textSecondary"
-                numberOfLines={1}
-              >
-                {metadataSummary ||
-                  `Podcast Me · ${formatEpisodeDate(item.addedAt)}`}
-              </ThemedText>
-              <ThemedText
-                type="metadata"
-                themeColor="textSecondary"
-                numberOfLines={1}
-              >
-                {formatFileSize(item.sizeBytes)} · Local · Saved offline
-              </ThemedText>
-              <XStack alignItems="center" gap={Spacing.one}>
-                <View
-                  width={7}
-                  height={7}
-                  borderRadius={7}
-                  backgroundColor={
-                    item.isPlayed
-                      ? '$success'
-                      : isActive
-                        ? '$accent'
-                        : '$warning'
-                  }
-                />
+              <YStack flex={1} minWidth={0} gap={Spacing.one}>
+                <ThemedText type="episodeTitle" numberOfLines={2}>
+                  {title}
+                </ThemedText>
                 <ThemedText
                   type="metadata"
-                  color={
-                    item.isPlayed
-                      ? '$success'
-                      : isActive
-                        ? '$accent'
-                        : '$colorMuted'
-                  }
+                  themeColor="textSecondary"
+                  numberOfLines={1}
                 >
-                  {item.isPlayed
-                    ? 'Played'
-                    : isActive
-                      ? isPlaying
-                        ? 'Playing'
-                        : 'In progress'
-                      : progress > 0
-                        ? 'In progress'
-                        : 'Unplayed'}
+                  {metadataSummary ||
+                    `Podcast Me · ${formatEpisodeDate(item.addedAt)}`}
                 </ThemedText>
-              </XStack>
-              {isUploading ? (
-                <ThemedText type="metadata" color="$accent">
-                  {uploadProgressPercent !== null
-                    ? `Uploading… ${uploadProgressPercent}%`
-                    : 'Uploading…'}
+                <ThemedText
+                  type="metadata"
+                  themeColor="textSecondary"
+                  numberOfLines={1}
+                >
+                  {formatFileSize(item.sizeBytes)} · Saved offline
                 </ThemedText>
-              ) : null}
-              {isUploaded ? (
                 <XStack alignItems="center" gap={Spacing.one}>
-                  <SymbolView
-                    name={UPLOADED_ICON}
-                    size={14}
-                    tintColor={theme.accent}
+                  <View
+                    width={7}
+                    height={7}
+                    borderRadius={7}
+                    backgroundColor={
+                      item.isPlayed
+                        ? '$success'
+                        : isActive
+                          ? '$accent'
+                          : '$warning'
+                    }
                   />
-                  <ThemedText type="metadata" color="$accent">
-                    Uploaded · in your account library
+                  <ThemedText
+                    type="metadata"
+                    color={
+                      item.isPlayed
+                        ? '$success'
+                        : isActive
+                          ? '$accent'
+                          : '$colorMuted'
+                    }
+                  >
+                    {item.isPlayed
+                      ? 'Played'
+                      : isActive
+                        ? isPlaying
+                          ? 'Playing'
+                          : 'In progress'
+                        : progress > 0
+                          ? 'In progress'
+                          : 'Unplayed'}
                   </ThemedText>
                 </XStack>
-              ) : null}
-              {uploadError ? (
-                <ThemedText type="metadata" color="$danger">
-                  {uploadError}
-                </ThemedText>
-              ) : null}
-            </YStack>
-          </AppButton>
+                {isUploading ? (
+                  <ThemedText type="metadata" color="$accent">
+                    {uploadProgressPercent !== null
+                      ? `Uploading… ${uploadProgressPercent}%`
+                      : 'Uploading…'}
+                  </ThemedText>
+                ) : null}
+                {isUploaded ? (
+                  <XStack alignItems="center" gap={Spacing.one}>
+                    <SymbolView
+                      name={UPLOADED_ICON}
+                      size={14}
+                      tintColor={theme.accent}
+                    />
+                    <ThemedText type="metadata" color="$accent">
+                      Uploaded · in your account library
+                    </ThemedText>
+                  </XStack>
+                ) : null}
+                {uploadError ? (
+                  <ThemedText type="metadata" color="$danger">
+                    {uploadError}
+                  </ThemedText>
+                ) : null}
+              </YStack>
+            </AppButton>
 
-          <YStack flexShrink={0} alignItems="center" gap={Spacing.two}>
-            <ThemedText type="metadata" themeColor="textSecondary">
-              {formatPlaybackTime(durationSeconds)}
-            </ThemedText>
-            {canUpload && !isUploaded ? (
+            <YStack flexShrink={0} alignItems="center" gap={Spacing.two}>
+              <ThemedText type="metadata" themeColor="textSecondary">
+                {formatPlaybackTime(durationSeconds)}
+              </ThemedText>
               <AppButton
                 tone="icon"
-                accessibilityLabel={`Upload ${title} to your account library`}
-                accessibilityState={{ busy: isUploading, disabled: isUploading }}
-                disabled={isUploading}
-                onPress={() => onUpload(item)}
-                backgroundColor="$backgroundSelected"
+                accessibilityLabel={`${isBusy ? 'Loading' : isActive && isPlaying ? 'Pause' : itemError ? 'Retry' : 'Play'} ${title}`}
+                accessibilityState={{
+                  busy: isBusy,
+                  disabled: isButtonDisabled,
+                }}
+                disabled={isButtonDisabled}
+                onPress={() => onTogglePlayback(item)}
+                backgroundColor="$accent"
               >
-                {isUploading ? (
-                  <Spinner size="small" color="$accent" />
-                ) : (
-                  <SymbolView
-                    name={UPLOAD_ICON}
-                    size={20}
-                    tintColor={theme.accent}
-                    weight="bold"
-                  />
-                )}
+                <SymbolView
+                  name={isActive && isPlaying ? PAUSE_ICON : PLAY_ICON}
+                  size={22}
+                  tintColor={theme.accentForeground}
+                  weight="bold"
+                />
               </AppButton>
-            ) : null}
-            <AppButton
-              tone="icon"
-              accessibilityLabel={`${isBusy ? 'Loading' : isActive && isPlaying ? 'Pause' : itemError ? 'Retry' : 'Play'} ${title}`}
-              accessibilityState={{ busy: isBusy, disabled: isButtonDisabled }}
-              disabled={isButtonDisabled}
-              onPress={() => onTogglePlayback(item)}
-              backgroundColor="$accent"
-            >
-              <SymbolView
-                name={isActive && isPlaying ? PAUSE_ICON : PLAY_ICON}
-                size={22}
-                tintColor={theme.accentForeground}
-                weight="bold"
-              />
-            </AppButton>
-            <AppButton
-              tone="icon"
-              accessibilityLabel={`Options for ${title}`}
-              onPress={() => setIsSheetOpen(true)}
-            >
-              <SymbolView
-                name={MORE_ICON}
-                size={20}
-                tintColor={theme.textSecondary}
-              />
-            </AppButton>
-          </YStack>
-        </XStack>
-
-        {(isActive || progress > 0) && durationSeconds !== null && (
-          <View height={3} backgroundColor="$backgroundSelected">
-            <View
-              height="100%"
-              width={`${progress * 100}%`}
-              backgroundColor="$accent"
-            />
-          </View>
-        )}
-
-        {(itemError || !item.isAvailable) && (
-          <YStack
-            gap={Spacing.one}
-            paddingHorizontal={Spacing.three}
-            paddingBottom={Spacing.three}
-          >
-            {itemError && (
-              <ThemedText
-                type="metadata"
-                color="$danger"
-                accessibilityLiveRegion="polite"
-                accessibilityRole="alert"
+              <AppButton
+                tone="icon"
+                accessibilityLabel={`Options for ${title}`}
+                onPress={() => setIsSheetOpen(true)}
               >
-                {itemError}
-              </ThemedText>
-            )}
-            {!item.isAvailable && (
-              <ThemedText type="metadata" color="$warning">
-                {item.unavailableReason === 'unsupported'
-                  ? 'Unsupported audio type. Re-import a supported recording.'
-                  : 'File missing. Re-import this recording to restore playback.'}
-              </ThemedText>
-            )}
-          </YStack>
-        )}
+                <SymbolView
+                  name={MORE_ICON}
+                  size={20}
+                  tintColor={theme.textSecondary}
+                />
+              </AppButton>
+            </YStack>
+          </XStack>
 
-      </ThemedView>
+          {(isActive || progress > 0) && durationSeconds !== null && (
+            <View height={3} backgroundColor="$backgroundSelected">
+              <View
+                height="100%"
+                width={`${progress * 100}%`}
+                backgroundColor="$accent"
+              />
+            </View>
+          )}
+
+          {(itemError || !item.isAvailable) && (
+            <YStack
+              gap={Spacing.one}
+              paddingHorizontal={Spacing.three}
+              paddingBottom={Spacing.three}
+            >
+              {itemError && (
+                <ThemedText
+                  type="metadata"
+                  color="$danger"
+                  accessibilityLiveRegion="polite"
+                  accessibilityRole="alert"
+                >
+                  {itemError}
+                </ThemedText>
+              )}
+              {!item.isAvailable && (
+                <ThemedText type="metadata" color="$warning">
+                  {item.unavailableReason === 'unsupported'
+                    ? 'Unsupported audio type. Re-import a supported recording.'
+                    : 'File missing. Re-import this recording to restore playback.'}
+                </ThemedText>
+              )}
+            </YStack>
+          )}
+        </ThemedView>
+        <NativeView
+          {...reorderResponder.panHandlers}
+          accessible
+          accessibilityLabel={`Reorder ${title}`}
+          accessibilityHint="Drag up or down to change its position"
+          accessibilityRole="button"
+          accessibilityState={{ disabled: isReorderDisabled || !reorderBounds }}
+          style={[
+            styles.reorderHandle,
+            {
+              backgroundColor: theme.backgroundSelected,
+              opacity: isReorderDisabled || !reorderBounds ? 0.45 : 0.88,
+              width: '100%',
+              height: 12,
+              marginTop: -4,
+            },
+          ]}
+        >
+          <SymbolView
+            name={REORDER_ICON}
+            size={18}
+            tintColor={theme.textSecondary}
+          />
+        </NativeView>
       </AnimatedView>
 
       {isSheetOpen && (
@@ -498,6 +516,31 @@ export const AudioLibraryRow = memo(function AudioLibraryRow({
               disabled: isActive,
               onPress: () => onPlayNext(item),
             },
+            {
+              key: 'move-earlier',
+              label: 'Move earlier',
+              icon: MOVE_EARLIER_ICON,
+              disabled: isReorderDisabled,
+              onPress: () => onReorder(item.id, -1),
+            },
+            {
+              key: 'move-later',
+              label: 'Move later',
+              icon: MOVE_LATER_ICON,
+              disabled: isReorderDisabled,
+              onPress: () => onReorder(item.id, 1),
+            },
+            ...(canUpload && !isUploaded
+              ? [
+                  {
+                    key: 'upload',
+                    label: isUploading ? 'Uploading…' : 'Upload to account',
+                    icon: UPLOAD_ICON,
+                    disabled: isUploading,
+                    onPress: () => onUpload(item),
+                  },
+                ]
+              : []),
             ...(onAddToPlaylist
               ? [
                   {
@@ -538,104 +581,6 @@ export const AudioLibraryRow = memo(function AudioLibraryRow({
     </>
   )
 })
-
-type RowAction = {
-  key: string
-  label: string
-  icon: SymbolViewProps['name']
-  disabled: boolean
-  destructive?: boolean
-  onPress: () => void
-}
-
-type RowActionSheetProps = {
-  title: string
-  actions: RowAction[]
-  onClose: () => void
-}
-
-/**
- * Bottom action sheet for a single row. Row height stays stable because
- * actions live in the sheet instead of an expanding inline section.
- */
-function RowActionSheet({ title, actions, onClose }: RowActionSheetProps) {
-  const theme = useTheme()
-
-  return (
-    <Modal
-      animationType="slide"
-      presentationStyle="pageSheet"
-      visible
-      onRequestClose={onClose}
-    >
-      <ThemedView flex={1}>
-        <SafeAreaView style={styles.safeArea}>
-          <YStack
-            width="100%"
-            maxWidth={640}
-            alignSelf="center"
-            gap={Spacing.two}
-            paddingHorizontal={Spacing.three}
-            paddingTop={Spacing.three}
-            paddingBottom={Spacing.five}
-          >
-            <XStack alignItems="center" justifyContent="space-between">
-              <ThemedText
-                type="smallBold"
-                numberOfLines={1}
-                flex={1}
-                minWidth={0}
-              >
-                {title}
-              </ThemedText>
-              <AppButton
-                tone="icon"
-                accessibilityLabel="Close options"
-                onPress={onClose}
-              >
-                <SymbolView
-                  name={CLOSE_ICON}
-                  size={18}
-                  tintColor={theme.textSecondary}
-                />
-              </AppButton>
-            </XStack>
-            {actions.map((action) => (
-              <AppButton
-                key={action.key}
-                tone="ghost"
-                accessibilityLabel={action.label}
-                accessibilityState={{ disabled: action.disabled }}
-                disabled={action.disabled}
-                onPress={() => {
-                  onClose()
-                  action.onPress()
-                }}
-                minHeight={52}
-                justifyContent="flex-start"
-                paddingHorizontal={Spacing.two}
-              >
-                <SymbolView
-                  name={action.icon}
-                  size={20}
-                  tintColor={
-                    action.destructive ? theme.danger : theme.text
-                  }
-                />
-                <ThemedText
-                  type="default"
-                  color={action.destructive ? '$danger' : undefined}
-                >
-                  {action.label}
-                </ThemedText>
-              </AppButton>
-            ))}
-          </YStack>
-        </SafeAreaView>
-      </ThemedView>
-    </Modal>
-  )
-}
 
 type MetadataDraft = Record<keyof AudioMetadata, string>
 
@@ -917,10 +862,20 @@ const PLAY_NEXT_ICON: SymbolViewProps['name'] = {
   android: 'queue_play_next',
   web: 'queue_play_next',
 }
-const CLOSE_ICON: SymbolViewProps['name'] = {
-  ios: 'xmark',
-  android: 'close',
-  web: 'close',
+const LOCAL_ICON: SymbolViewProps['name'] = {
+  ios: 'iphone',
+  android: 'phone_android',
+  web: 'smartphone',
+}
+const MOVE_EARLIER_ICON: SymbolViewProps['name'] = {
+  ios: 'arrow.up',
+  android: 'arrow_upward',
+  web: 'arrow_upward',
+}
+const MOVE_LATER_ICON: SymbolViewProps['name'] = {
+  ios: 'arrow.down',
+  android: 'arrow_downward',
+  web: 'arrow_downward',
 }
 const REORDER_ICON: SymbolViewProps['name'] = {
   ios: 'line.3.horizontal',
@@ -949,6 +904,17 @@ const AnimatedView = styled(Animated.View, {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
+  reorderHandle: {
+    position: 'absolute',
+    top: Spacing.one,
+    right: Spacing.one,
+    zIndex: 3,
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: Radius.round,
+  },
   formContent: {
     paddingHorizontal: Spacing.three,
     paddingTop: Spacing.two,

@@ -12,6 +12,7 @@ import {
   getAndroidAutoPlaybackState,
   observeAndroidAutoPlaybackState,
   pauseAndroidAutoPlayback,
+  prepareAndroidAutoItem,
   playAndroidAutoItem,
   seekAndroidAutoPlayback,
   setAndroidAutoPlaybackRate,
@@ -60,6 +61,7 @@ export function useAudioLibraryPlayer(
     null,
   );
   const statusRef = useRef(status);
+  const renderedStatusRef = useRef(status);
   const transitionSequence = useRef(0);
   const lastCheckpoint = useRef<{ itemId: string; savedAt: number } | null>(
     null,
@@ -73,16 +75,16 @@ export function useAudioLibraryPlayer(
 
   const applyPlaybackState = useCallback(
     (nextState: AndroidAutoPlaybackState) => {
-      const previous = statusRef.current;
       statusRef.current = nextState;
 
-      // Dedup 500 ms position ticks: the ref stays fresh for persist
-      // reads, but React state (and every context consumer) only updates
-      // on meaningful changes.
-      if (isPlaybackStateEquivalent(previous, nextState)) {
+      // Keep the live ref fresh for persistence, but compare with the last
+      // UI state. Comparing each 500 ms tick with the preceding tick would
+      // keep every delta below the one-second threshold forever.
+      if (isPlaybackStateEquivalent(renderedStatusRef.current, nextState)) {
         return;
       }
 
+      renderedStatusRef.current = nextState;
       setStatus(nextState);
       setIsTransitioning(false);
 
@@ -234,16 +236,22 @@ export function useAudioLibraryPlayer(
   const lastItemRef = useRef<LoadedAudioItem | null>(null);
 
   const loadAndPlay = useCallback(
-    async (item: LoadedAudioItem) => {
+    async (item: LoadedAudioItem, shouldPlay = true) => {
       const requestId = beginTransition();
       lastItemRef.current = item;
       try {
-        const didPlay = await playAndroidAutoItem(
-          item.id,
-          item.lastPositionSeconds,
-          statusRef.current.playbackRate,
-        );
-        if (!didPlay) {
+        const didLoad = await (shouldPlay
+          ? playAndroidAutoItem(
+              item.id,
+              item.lastPositionSeconds,
+              statusRef.current.playbackRate,
+            )
+          : prepareAndroidAutoItem(
+              item.id,
+              item.lastPositionSeconds,
+              statusRef.current.playbackRate,
+            ));
+        if (!didLoad) {
           failPlayback(
             item.id,
             "This recording could not be prepared. Re-import it or try again.",
@@ -352,10 +360,15 @@ export function useAudioLibraryPlayer(
         current.durationSeconds,
       );
       const requestId = beginTransition();
-      setStatus((previous) => ({
-        ...previous,
-        currentPositionSeconds: target,
-      }));
+      setStatus((previous) => {
+        const nextState = {
+          ...previous,
+          currentPositionSeconds: target,
+        };
+        statusRef.current = nextState;
+        renderedStatusRef.current = nextState;
+        return nextState;
+      });
 
       try {
         if (!(await seekAndroidAutoPlayback(target))) {
@@ -397,8 +410,12 @@ export function useAudioLibraryPlayer(
     }
 
     const safeRate = Math.min(Math.max(rate, 0.5), 2);
-    setStatus((previous) => ({ ...previous, playbackRate: safeRate }));
-    statusRef.current = { ...statusRef.current, playbackRate: safeRate };
+    setStatus((previous) => {
+      const nextState = { ...previous, playbackRate: safeRate };
+      statusRef.current = nextState;
+      renderedStatusRef.current = nextState;
+      return nextState;
+    });
     void setAndroidAutoPlaybackRate(safeRate).then((didUpdate) => {
       if (!didUpdate && statusRef.current.mediaId) {
         setPlaybackError({
@@ -491,6 +508,17 @@ export function useAudioLibraryPlayer(
     ],
   );
 
+  const loadPaused = useCallback(
+    (item: LoadedAudioItem): void => {
+      if (!isLibraryReady || !item.isAvailable || isTransitioning) {
+        return;
+      }
+
+      void loadAndPlay(item, false);
+    },
+    [isLibraryReady, isTransitioning, loadAndPlay],
+  );
+
   // Remote (`remote:<id>`) media on the shared engine is owned by the
   // remote hook: report no local item (and not local-playing) so the local
   // surfaces, queue kind, and Up-next stay consistent with the remote
@@ -515,6 +543,7 @@ export function useAudioLibraryPlayer(
       playbackError,
       playbackRate,
       dismissPlayer,
+      loadPaused,
       pausePlayback,
       removeActiveItem,
       resumePlayback,
@@ -533,6 +562,7 @@ export function useAudioLibraryPlayer(
       isPlaying,
       isReady,
       isTransitioning,
+      loadPaused,
       pausePlayback,
       playbackError,
       playbackRate,

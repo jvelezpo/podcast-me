@@ -31,6 +31,7 @@ type PendingLoad = {
   item: LoadedAudioItem;
   sawUnloadedStatus: boolean;
   isStarting: boolean;
+  shouldPlay: boolean;
 };
 
 const CHECKPOINT_INTERVAL_MS = 5_000;
@@ -197,7 +198,7 @@ export function useAudioLibraryPlayer(
   );
 
   const loadAndPlay = useCallback(
-    async (item: LoadedAudioItem) => {
+    async (item: LoadedAudioItem, shouldPlay = true) => {
       const requestId = beginTransition();
       const previousItemId = activeItemRef.current?.id ?? null;
       setPlaybackError(null);
@@ -236,6 +237,7 @@ export function useAudioLibraryPlayer(
           item,
           sawUnloadedStatus: false,
           isStarting: false,
+          shouldPlay,
         };
         pendingLoad.current = pending;
         player.replace({ uri: item.localUri, name: getAudioItemTitle(item) });
@@ -552,9 +554,16 @@ export function useAudioLibraryPlayer(
         }
 
         player.setPlaybackRate(playbackRateRef.current);
-        activateLockScreenControls(pending.item);
-        internalPauseRef.current = false;
-        player.play();
+
+        if (pending.shouldPlay) {
+          activateLockScreenControls(pending.item);
+          internalPauseRef.current = false;
+          player.play();
+        } else {
+          internalPauseRef.current = true;
+          player.pause();
+          player.setActiveForLockScreen(false);
+        }
 
         if (pendingLoad.current?.requestId !== pending.requestId) {
           return;
@@ -715,6 +724,17 @@ export function useAudioLibraryPlayer(
     [isLibraryReady, loadAndPlay, pausePlayback, playbackError?.itemId, resumePlayback]
   );
 
+  const loadPaused = useCallback(
+    (item: LoadedAudioItem): void => {
+      if (!isLibraryReady || !item.isAvailable || transitionInProgress.current) {
+        return;
+      }
+
+      void loadAndPlay(item, false);
+    },
+    [isLibraryReady, loadAndPlay]
+  );
+
   const dismissPlayer = useCallback(async (): Promise<boolean> => {
     const itemId = activeItemRef.current?.id;
 
@@ -763,6 +783,7 @@ export function useAudioLibraryPlayer(
       playbackError,
       playbackRate,
       dismissPlayer,
+      loadPaused,
       pausePlayback,
       removeActiveItem,
       resumePlayback,
@@ -777,6 +798,7 @@ export function useAudioLibraryPlayer(
       activeItemId,
       dismissPlayer,
       isLibraryReady,
+      loadPaused,
       isTransitioning,
       pausePlayback,
       playbackError,

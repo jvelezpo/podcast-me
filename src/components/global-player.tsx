@@ -55,6 +55,7 @@ import { getShowKey } from '@/utils/playback-rate'
 
 const SWIPE_INTENT_DISTANCE = 10
 const DOCK_EXPAND_DISTANCE = 48
+const DOCK_DISMISS_DISTANCE = 80
 /** Sleep fade-out: volume ramps 1 → 0 across the final 30s of a timed sleep. */
 const SLEEP_FADE_MS = 30_000
 /** A load/buffer that never resolves within ~8s is a stall, not a spinner. */
@@ -72,6 +73,8 @@ export function GlobalPlayer() {
     playerItem,
     skipToNext,
     skipToPrevious,
+    skipToNextPreservingPlayback,
+    skipToPreviousPreservingPlayback,
     endOfEpisodeArmed,
     armEndOfEpisode,
     consumeEndOfEpisodeHold,
@@ -98,6 +101,7 @@ export function GlobalPlayer() {
   // sheet. Tracked in a ref because the responder outlives render state.
   const dockDragYRef = useRef(0)
   const expandDockRef = useRef<(() => void) | null>(null)
+  const dismissDockRef = useRef<(() => void) | null>(null)
   // The sleep timer pauses whichever player is active, so the countdown is
   // shared by the local and remote surfaces. Playback refs are read lazily
   // because status updates frequently.
@@ -162,6 +166,12 @@ export function GlobalPlayer() {
   useEffect(() => {
     expandDockRef.current = activeItem ? () => openPlayer(activeItem) : null
   }, [activeItem, openPlayer])
+
+  useEffect(() => {
+    dismissDockRef.current = () => {
+      void playback.dismissPlayer()
+    }
+  }, [playback.dismissPlayer])
 
   // Sleep persistence: restore a countdown (or the end-of-episode hold) that
   // survived an app kill, then persist every later change. Saves wait until
@@ -305,7 +315,8 @@ export function GlobalPlayer() {
         return false
       }
 
-      // Horizontal swipe: non-destructive, springs back on release.
+      // Horizontal swipe dismisses the collapsed dock; vertical dock-up
+      // expands it into the full player.
       if (
         Math.abs(gesture.dx) >= SWIPE_INTENT_DISTANCE &&
         Math.abs(gesture.dx) > Math.abs(gesture.dy)
@@ -334,8 +345,34 @@ export function GlobalPlayer() {
         swipeOffset.setValue(gesture.dx)
       },
       onPanResponderRelease: (_event, gesture) => {
-        // Drag dock-up expands; horizontal swipe is never destructive and
-        // springs back. Playback can only be stopped via pause/stop buttons.
+        if (
+          Math.abs(gesture.dx) >= DOCK_DISMISS_DISTANCE &&
+          Math.abs(gesture.dx) > Math.abs(gesture.dy)
+        ) {
+          dockDragYRef.current = 0
+          const flyDistance = Math.max(playerWidthRef.current, 1)
+
+          if (reduceMotionRef.current) {
+            swipeOffset.setValue(0)
+            dismissDockRef.current?.()
+            return
+          }
+
+          Animated.timing(swipeOffset, {
+            toValue: gesture.dx < 0 ? -flyDistance : flyDistance,
+            duration: 180,
+            useNativeDriver: true,
+          }).start(({ finished }) => {
+            swipeOffset.setValue(0)
+
+            if (finished) {
+              dismissDockRef.current?.()
+            }
+          })
+          return
+        }
+
+        // Drag dock-up expands the full player.
         if (
           gesture.dy <= -DOCK_EXPAND_DISTANCE &&
           Math.abs(gesture.dy) > Math.abs(gesture.dx)
@@ -556,6 +593,8 @@ export function GlobalPlayer() {
           onOpenQueue={handleOpenQueue}
           onSkipToNext={skipToNext}
           onSkipToPrevious={skipToPrevious}
+          onSwipeToNext={skipToNextPreservingPlayback}
+          onSwipeToPrevious={skipToPreviousPreservingPlayback}
           openPlayer={openRemotePlayer}
           remotePlayback={remotePlayback}
           sleepEndsAt={sleepTimer.sleepTimerEndsAt}
@@ -936,10 +975,9 @@ export function GlobalPlayer() {
           paddingTop={media.short ? Spacing.one : Spacing.three}
         >
           <SwipeableArtwork
-            disabled={isDisabled || !isViewingActiveItem}
             itemTitle={itemTitle}
-            onSwipeLeft={() => skipToNext()}
-            onSwipeRight={() => skipToPrevious()}
+            onSwipeLeft={() => skipToNextPreservingPlayback()}
+            onSwipeRight={() => skipToPreviousPreservingPlayback()}
           >
             <ThemedView
               type="backgroundElement"
@@ -1013,6 +1051,8 @@ type RemotePlayerSurfaceProps = {
   onOpenQueue: () => void
   onSkipToNext: () => void
   onSkipToPrevious: () => void
+  onSwipeToNext: () => boolean
+  onSwipeToPrevious: () => boolean
   openPlayer: (audio: RemoteAudio) => void
   sleepEndsAt: number | null
   sleepDurationMinutes: number | null
@@ -1048,6 +1088,8 @@ function RemotePlayerSurface({
   onOpenQueue,
   onSkipToNext,
   onSkipToPrevious,
+  onSwipeToNext,
+  onSwipeToPrevious,
   openPlayer,
   remotePlayback,
   sleepEndsAt,
@@ -1437,10 +1479,9 @@ function RemotePlayerSurface({
           paddingTop={media.short ? Spacing.one : Spacing.three}
         >
           <SwipeableArtwork
-            disabled={isDisabled}
             itemTitle={audio.title}
-            onSwipeLeft={() => onSkipToNext()}
-            onSwipeRight={() => onSkipToPrevious()}
+            onSwipeLeft={onSwipeToNext}
+            onSwipeRight={onSwipeToPrevious}
           >
             <ThemedView
               type="backgroundElement"

@@ -24,11 +24,11 @@ export default function AppTabs() {
           <TabTrigger name="library" href="/" asChild>
             <TabButton icon={LIBRARY_ICON}>Library</TabButton>
           </TabTrigger>
+          <TabTrigger name="recent" href="/recent" asChild>
+            <TabButton icon={RECENT_ICON}>Recent</TabButton>
+          </TabTrigger>
           <TabTrigger name="playlists" href="/playlists" asChild>
             <TabButton icon={PLAYLIST_ICON}>Playlists</TabButton>
-          </TabTrigger>
-          <TabTrigger name="discover" href="/explore" asChild>
-            <TabButton icon={DISCOVER_ICON}>Discover</TabButton>
           </TabTrigger>
           <TabTrigger name="search" href="/search" asChild>
             <TabButton icon={SEARCH_ICON}>Search</TabButton>
@@ -128,10 +128,10 @@ const PLAYLIST_ICON: SymbolViewProps['name'] = {
   android: 'queue_music',
   web: 'queue_music',
 }
-const DISCOVER_ICON: SymbolViewProps['name'] = {
-  ios: 'safari.fill',
-  android: 'explore',
-  web: 'explore',
+const RECENT_ICON: SymbolViewProps['name'] = {
+  ios: 'clock.fill',
+  android: 'history',
+  web: 'history',
 }
 const SEARCH_ICON: SymbolViewProps['name'] = {
   ios: 'magnifyingglass',

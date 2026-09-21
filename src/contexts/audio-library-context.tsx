@@ -81,6 +81,10 @@ type AudioLibraryContextValue = {
   skipToNext: () => boolean
   /** Return to the previous playable entry; returns true when playback started. */
   skipToPrevious: () => boolean
+  /** Navigate without changing whether the current audio was playing. */
+  skipToNextPreservingPlayback: () => boolean
+  /** Navigate without changing whether the current audio was playing. */
+  skipToPreviousPreservingPlayback: () => boolean
   /**
    * Active queue snapshot for the queue sheet and Up-next label: the
    * explicit playlist queue when set, otherwise the published library queue.
@@ -549,6 +553,44 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
     },
     [playEntry]
   )
+  const loadEntryPaused = useCallback(
+    (entry: QueueEntry) => {
+      if (entry.kind === 'local') {
+        openPlayer(entry.item)
+
+        if (remotePlayback.activeAudioId || remotePlayback.isTransitioning) {
+          remotePlayback.stop()
+        }
+
+        playback.loadPaused(entry.item)
+        return
+      }
+
+      openRemotePlayer(entry.audio)
+
+      if (playback.activeItemId) {
+        void playback.dismissPlayer().then((didStop) => {
+          if (didStop) {
+            remotePlayback.loadPaused(entry.audio)
+          }
+        })
+        return
+      }
+
+      remotePlayback.loadPaused(entry.audio)
+    },
+    [
+      openPlayer,
+      openRemotePlayer,
+      playback.activeItemId,
+      playback.dismissPlayer,
+      playback.loadPaused,
+      remotePlayback.activeAudioId,
+      remotePlayback.isTransitioning,
+      remotePlayback.loadPaused,
+      remotePlayback.stop,
+    ],
+  )
   /**
    * Manual track change for the Prev/Next transport buttons. Inside a
    * playlist the explicit queue wins; otherwise the Library screen owns the
@@ -556,7 +598,10 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
    * The anchor is the actively playing entry, falling back to the open sheet.
    */
   const skipInDirection = useCallback(
-    (direction: 'next' | 'previous'): boolean => {
+    (
+      direction: 'next' | 'previous',
+      preservePlaybackState = false,
+    ): boolean => {
       // Manual navigation cancels a stale End-of-episode hold and any
       // queued Play-next entry.
       consumeEndOfEpisodeHold()
@@ -588,7 +633,16 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
           return false
         }
 
-        playEntry(adjacent)
+        const wasPlaying =
+          activeKind === 'local'
+            ? playback.isPlaying
+            : remotePlayback.isPlaying
+
+        if (preservePlaybackState && !wasPlaying) {
+          loadEntryPaused(adjacent)
+        } else {
+          playEntry(adjacent)
+        }
 
         return true
       }
@@ -602,10 +656,13 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
     [
       consumeEndOfEpisodeHold,
       consumePlayNextEntry,
+      loadEntryPaused,
       playback.activeItemId,
+      playback.isPlaying,
       playEntry,
       playerItem,
       remotePlayback.activeAudioId,
+      remotePlayback.isPlaying,
     ]
   )
   const skipToNext = useCallback(
@@ -615,6 +672,14 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
   const skipToPrevious = useCallback(
     () => skipInDirection('previous'),
     [skipInDirection]
+  )
+  const skipToNextPreservingPlayback = useCallback(
+    () => skipInDirection('next', true),
+    [skipInDirection],
+  )
+  const skipToPreviousPreservingPlayback = useCallback(
+    () => skipInDirection('previous', true),
+    [skipInDirection],
   )
 
   const libraryDataValue = useMemo<LibraryDataValue>(
@@ -641,6 +706,8 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
       removeQueueEntryById,
       skipToNext,
       skipToPrevious,
+      skipToNextPreservingPlayback,
+      skipToPreviousPreservingPlayback,
       playbackQueue,
       queuePlayNext,
       consumePlayNextEntry,
@@ -663,6 +730,8 @@ export function AudioLibraryProvider({ children }: PropsWithChildren) {
       removeQueueEntryById,
       skipToNext,
       skipToPrevious,
+      skipToNextPreservingPlayback,
+      skipToPreviousPreservingPlayback,
       playbackQueue,
       queuePlayNext,
       consumePlayNextEntry,

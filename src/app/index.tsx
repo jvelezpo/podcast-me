@@ -8,13 +8,20 @@ import {
   useRef,
   useState,
 } from 'react'
-import { Alert, FlatList, Platform, RefreshControl, StyleSheet } from 'react-native'
+import {
+  Alert,
+  FlatList,
+  LayoutAnimation,
+  Platform,
+  RefreshControl,
+  StyleSheet,
+  UIManager,
+} from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
 import { AudioLibraryRow } from '@/components/audio-library-row'
 import { AddToPlaylistSheet } from '@/components/add-to-playlist-sheet'
-import { EpisodeArtwork } from '@/components/episode-artwork'
 import { RemoteAudioRow } from '@/components/remote-audio-row'
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
@@ -45,6 +52,11 @@ import {
   subscribeToRemoteAudioFileCache,
 } from '@/services/remote-audio-file-cache'
 import {
+  loadCollectionOrder,
+  saveCollectionOrder,
+  type CollectionOrderEntry,
+} from '@/services/collection-order-storage'
+import {
   type RemoteAudioUploadProgress,
   type UploadableAudioAsset,
 } from '@/services/remote-audio-upload'
@@ -54,7 +66,6 @@ import {
   formatPlaybackTime,
   getAudioItemTitle,
 } from '@/utils/audio-display'
-import { findResumeItem } from '@/utils/resume'
 import { notifyToast } from '@/services/toast-queue'
 import { success } from '@/services/haptics'
 import type { PlaylistAudioRef } from '@/models/playlist'
@@ -67,6 +78,11 @@ type RemoteCollection = {
   userId: string | null
   audios: RemoteAudio[]
   cachedAudioIds: Set<string>
+}
+
+type ReorderPreview = {
+  itemKey: string
+  offset: number
 }
 
 export default function HomeScreen() {
@@ -97,6 +113,10 @@ export default function HomeScreen() {
     null,
   )
   const [highlightToken, setHighlightToken] = useState(0)
+  const [reorderPreview, setReorderPreview] = useState<ReorderPreview | null>(
+    null,
+  )
+  const reorderPreviewRef = useRef<ReorderPreview | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [downloadingAudioIds, setDownloadingAudioIds] = useState<Set<string>>(
     () => new Set(),
@@ -117,6 +137,10 @@ export default function HomeScreen() {
     audios: [],
     cachedAudioIds: new Set(),
   })
+  const [collectionOrder, setCollectionOrder] = useState<
+    CollectionOrderEntry[]
+  >([])
+  const [isCollectionOrderReady, setIsCollectionOrderReady] = useState(false)
   const isLibraryBusy = library.importPhase !== 'idle' || library.isMutating
   const isOffline =
     networkState.isConnected === false ||
@@ -131,37 +155,24 @@ export default function HomeScreen() {
       ),
     [library.items],
   )
-  // Continue-listening hero: the unfinished episode with the greatest saved
-  // position. Persisted every 5s while playing (plus pause/background saves),
-  // so kill-app → relaunch → 1-tap Resume lands within seconds of the spot.
-  const resumeItem = useMemo(
-    () => findResumeItem(library.items),
-    [library.items],
-  )
-  const isResumeItemActive =
-    resumeItem !== null && playback.activeItemId === resumeItem.id
-  const resumePositionSeconds =
-    resumeItem === null
-      ? 0
-      : isResumeItemActive
-        ? playback.currentPositionSeconds
-        : resumeItem.lastPositionSeconds
-  const resumeDurationSeconds =
-    resumeItem === null
-      ? null
-      : (isResumeItemActive
-          ? (playback.durationSeconds ?? resumeItem.durationSeconds)
-          : resumeItem.durationSeconds)
-  // Recently added (folded in from Discover): 3 most recent local imports.
-  const recentItems = useMemo(
-    () =>
-      [...library.items]
-        .sort((first, second) => second.addedAt.localeCompare(first.addedAt))
-        .slice(0, 3),
-    [library.items],
-  )
   const visibleRemoteCollection =
     user && remoteCollection.userId === user.id ? remoteCollection : null
+  const collectionOrderScope = user?.id ?? 'device'
+  useEffect(() => {
+    let isMounted = true
+
+    setIsCollectionOrderReady(false)
+    void loadCollectionOrder(collectionOrderScope).then((order) => {
+      if (isMounted) {
+        setCollectionOrder(order)
+        setIsCollectionOrderReady(true)
+      }
+    })
+
+    return () => {
+      isMounted = false
+    }
+  }, [collectionOrderScope])
   const reconciliation = useMemo(
     () =>
       reconcileLibraryAudio(
@@ -171,7 +182,12 @@ export default function HomeScreen() {
       ),
     [isOnline, library.items, visibleRemoteCollection],
   )
-  const collectionItems: CollectionItem[] = useMemo(
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      UIManager.setLayoutAnimationEnabledExperimental?.(true)
+    }
+  }, [])
+  const unorderedCollectionItems: CollectionItem[] = useMemo(
     () => [
       ...library.items.map((item) => ({ kind: 'local' as const, item })),
       ...(visibleRemoteCollection?.audios ?? [])
@@ -183,7 +199,19 @@ export default function HomeScreen() {
             visibleRemoteCollection?.cachedAudioIds.has(audio.id) ?? false,
         })),
     ],
-    [library.items, reconciliation.hiddenRemoteIds, visibleRemoteCollection],
+    [
+      library.items,
+      reconciliation.hiddenRemoteIds,
+      visibleRemoteCollection,
+    ],
+  )
+  const orderedCollectionItems = useMemo(
+    () => orderCollectionItems(unorderedCollectionItems, collectionOrder),
+    [collectionOrder, unorderedCollectionItems],
+  )
+  const collectionItems = useMemo(
+    () => applyReorderPreview(orderedCollectionItems, reorderPreview),
+    [orderedCollectionItems, reorderPreview],
   )
   const contentContainerStyle = useMemo(
     () => ({
@@ -817,11 +845,76 @@ export default function HomeScreen() {
     },
     [queuePlayNext],
   )
-  const handleReorderRow = useCallback(
-    (itemId: string, offset: number) => {
-      void library.reorderAudio(itemId, offset)
+  const handlePreviewReorder = useCallback(
+    (itemKey: string, offset: number) => {
+      const nextPreview = offset === 0 ? null : { itemKey, offset }
+      const previousPreview = reorderPreviewRef.current
+
+      if (
+        previousPreview?.itemKey === nextPreview?.itemKey &&
+        previousPreview?.offset === nextPreview?.offset
+      ) {
+        return
+      }
+
+      reorderPreviewRef.current = nextPreview
+      LayoutAnimation.configureNext({
+        duration: 220,
+        update: { type: LayoutAnimation.Types.easeInEaseOut },
+      })
+      setReorderPreview(nextPreview)
     },
-    [library],
+    [],
+  )
+  const handleLocalPreviewReorder = useCallback(
+    (itemId: string, offset: number) =>
+      handlePreviewReorder(collectionItemKey('local', itemId), offset),
+    [handlePreviewReorder],
+  )
+  const handleRemotePreviewReorder = useCallback(
+    (audioId: string, offset: number) =>
+      handlePreviewReorder(collectionItemKey('remote', audioId), offset),
+    [handlePreviewReorder],
+  )
+  const handleReorderRow = useCallback(
+    (kind: CollectionItem['kind'], itemId: string, offset: number) => {
+      if (offset === 0) {
+        return
+      }
+
+      const reorderedItems = reorderCollectionItems(
+        orderedCollectionItems,
+        collectionItemKey(kind, itemId),
+        offset,
+      )
+      const nextOrder = reorderedItems.map(collectionOrderEntry)
+
+      if (
+        nextOrder.every(
+          (entry, index) =>
+            entry.kind === collectionOrder[index]?.kind &&
+            entry.id === collectionOrder[index]?.id,
+        )
+      ) {
+        return
+      }
+
+      setCollectionOrder(nextOrder)
+      void saveCollectionOrder(collectionOrderScope, nextOrder).catch(
+        () => undefined,
+      )
+    },
+    [collectionOrder, collectionOrderScope, orderedCollectionItems],
+  )
+  const handleLocalReorderRow = useCallback(
+    (itemId: string, offset: number) =>
+      handleReorderRow('local', itemId, offset),
+    [handleReorderRow],
+  )
+  const handleRemoteReorderRow = useCallback(
+    (audioId: string, offset: number) =>
+      handleReorderRow('remote', audioId, offset),
+    [handleReorderRow],
   )
   const handleUploadRow = useCallback(
     (rowItem: LoadedAudioItem) => {
@@ -856,17 +949,6 @@ export default function HomeScreen() {
     },
     [handleToggleRemotePlayback],
   )
-  const handleResumeHero = useCallback(() => {
-    if (resumeItem) {
-      playCollectionEntry({ kind: 'local', item: resumeItem })
-    }
-  }, [playCollectionEntry, resumeItem])
-  const handlePlayRecentRow = useCallback(
-    (item: LoadedAudioItem) => {
-      playCollectionEntry({ kind: 'local', item })
-    },
-    [playCollectionEntry],
-  )
   const handleRefreshRow = useCallback(() => {
     void handleRefresh()
   }, [handleRefresh])
@@ -879,6 +961,11 @@ export default function HomeScreen() {
       if (item.kind === 'remote') {
         const isDownloading = downloadingAudioIds.has(item.audio.id)
         const isActive = remotePlayback.activeAudioId === item.audio.id
+        const collectionIndex = orderedCollectionItems.findIndex(
+          (candidate) =>
+            collectionItemKey(candidate.kind, collectionItemId(candidate)) ===
+            collectionItemKey('remote', item.audio.id),
+        )
 
         return (
           <RemoteAudioRow
@@ -898,8 +985,17 @@ export default function HomeScreen() {
                 ? remotePlayback.playbackError.message
                 : null
             }
+            isReorderDisabled={
+              !isCollectionOrderReady || orderedCollectionItems.length < 2
+            }
+            reorderBounds={{
+              min: -collectionIndex,
+              max: orderedCollectionItems.length - collectionIndex - 1,
+            }}
             onOpenPlayer={openRemotePlayer}
             onTogglePlayback={handleToggleRemoteRow}
+            onReorder={handleRemoteReorderRow}
+            onPreviewReorder={handleRemotePreviewReorder}
             onDownload={handleDownloadRow}
             onRemoveDownload={handleRemoveRemoteDownload}
             onAddToPlaylist={handleAddRemoteToPlaylist}
@@ -908,6 +1004,11 @@ export default function HomeScreen() {
       }
 
       const localItem = item.item
+      const collectionIndex = orderedCollectionItems.findIndex(
+        (candidate) =>
+          collectionItemKey(candidate.kind, collectionItemId(candidate)) ===
+          collectionItemKey('local', localItem.id),
+      )
       const isActive = playback.activeItemId === localItem.id
       const isUploadingItem = uploadingItemId === localItem.id
       const isUploaded = reconciliation.uploadedLocalIds.has(localItem.id)
@@ -936,7 +1037,15 @@ export default function HomeScreen() {
           }
           isDeleteDisabled={isLibraryBusy || playback.isTransitioning}
           isMetadataDisabled={isLibraryBusy}
-          isReorderDisabled={isLibraryBusy || library.items.length < 2}
+          isReorderDisabled={
+            isLibraryBusy ||
+            !isCollectionOrderReady ||
+            orderedCollectionItems.length < 2
+          }
+          reorderBounds={{
+            min: -collectionIndex,
+            max: orderedCollectionItems.length - collectionIndex - 1,
+          }}
           loadedDurationSeconds={
             isActive ? playback.durationSeconds : null
           }
@@ -949,7 +1058,8 @@ export default function HomeScreen() {
           onDelete={confirmRemoveAudio}
           onOpenPlayer={openPlayer}
           onPlayNext={handlePlayNext}
-          onReorder={handleReorderRow}
+          onReorder={handleLocalReorderRow}
+          onPreviewReorder={handleLocalPreviewReorder}
           onSaveMetadata={library.updateAudioMetadata}
           onTogglePlayback={handleToggleLocalPlayback}
           onUpload={handleUploadRow}
@@ -965,8 +1075,11 @@ export default function HomeScreen() {
       handleAddRemoteToPlaylist,
       handleDownloadRow,
       handlePlayNext,
-      handleReorderRow,
+      handleLocalPreviewReorder,
+      handleLocalReorderRow,
       handleRemoveRemoteDownload,
+      handleRemotePreviewReorder,
+      handleRemoteReorderRow,
       handleToggleLocalPlayback,
       handleToggleRemoteRow,
       handleUploadRow,
@@ -984,6 +1097,7 @@ export default function HomeScreen() {
       playback.isReady,
       playback.isTransitioning,
       playback.playbackError,
+      orderedCollectionItems,
       reconciliation.uploadedLocalIds,
       remotePlayback.activeAudioId,
       remotePlayback.isPlaying,
@@ -993,6 +1107,7 @@ export default function HomeScreen() {
       uploadingItemId,
       uploadProgress,
       user,
+      isCollectionOrderReady,
     ],
   )
 
@@ -1074,18 +1189,6 @@ export default function HomeScreen() {
           )}
         </XStack>
 
-        {!library.isLoading && resumeItem && (
-          <ResumeHero
-            item={resumeItem}
-            positionSeconds={resumePositionSeconds}
-            durationSeconds={resumeDurationSeconds}
-            isResumeDisabled={
-              playback.isTransitioning || !playback.isReady
-            }
-            onResume={handleResumeHero}
-          />
-        )}
-
         {!library.isLoading && library.items.length > 0 && (
           <XStack flexWrap="wrap" gap={Spacing.two}>
             <StatChip
@@ -1101,15 +1204,6 @@ export default function HomeScreen() {
               label="Total time"
             />
           </XStack>
-        )}
-
-        {!library.isLoading && recentItems.length > 0 && (
-          <RecentlyAdded
-            items={recentItems}
-            activeItemId={playback.activeItemId}
-            isPlaying={playback.isPlaying}
-            onPlay={handlePlayRecentRow}
-          />
         )}
 
         {Platform.OS === 'web' && (
@@ -1153,8 +1247,6 @@ export default function HomeScreen() {
     ),
     [
       handleAddAudioRow,
-      handlePlayRecentRow,
-      handleResumeHero,
       isOffline,
       isOnline,
       isLibraryBusy,
@@ -1163,14 +1255,6 @@ export default function HomeScreen() {
       library.isLoading,
       library.items,
       library.notice,
-      playback.activeItemId,
-      playback.isPlaying,
-      playback.isReady,
-      playback.isTransitioning,
-      recentItems,
-      resumeDurationSeconds,
-      resumeItem,
-      resumePositionSeconds,
       theme.accentForeground,
       totalDuration,
     ],
@@ -1286,6 +1370,92 @@ export default function HomeScreen() {
   )
 }
 
+function applyReorderPreview(
+  items: CollectionItem[],
+  preview: ReorderPreview | null,
+): CollectionItem[] {
+  if (!preview) {
+    return items
+  }
+
+  return reorderCollectionItems(items, preview.itemKey, preview.offset)
+}
+
+function reorderCollectionItems(
+  items: CollectionItem[],
+  itemKey: string,
+  offset: number,
+): CollectionItem[] {
+  const fromIndex = items.findIndex(
+    (item) => collectionItemKey(item.kind, collectionItemId(item)) === itemKey,
+  )
+
+  if (fromIndex < 0) {
+    return items
+  }
+
+  const toIndex = Math.max(
+    0,
+    Math.min(fromIndex + offset, items.length - 1),
+  )
+
+  if (toIndex === fromIndex) {
+    return items
+  }
+
+  const nextItems = [...items]
+  const [movedItem] = nextItems.splice(fromIndex, 1)
+  nextItems.splice(toIndex, 0, movedItem)
+  return nextItems
+}
+
+function orderCollectionItems(
+  items: CollectionItem[],
+  order: readonly CollectionOrderEntry[],
+): CollectionItem[] {
+  const orderIndex = new Map(
+    order.map((entry, index) => [collectionItemKey(entry.kind, entry.id), index]),
+  )
+
+  return [...items].sort((first, second) => {
+    const firstIndex = orderIndex.get(
+      collectionItemKey(first.kind, collectionItemId(first)),
+    )
+    const secondIndex = orderIndex.get(
+      collectionItemKey(second.kind, collectionItemId(second)),
+    )
+
+    if (firstIndex === undefined && secondIndex === undefined) {
+      return 0
+    }
+
+    if (firstIndex === undefined) {
+      return 1
+    }
+
+    if (secondIndex === undefined) {
+      return -1
+    }
+
+    return firstIndex - secondIndex
+  })
+}
+
+function collectionItemId(item: CollectionItem): string {
+  return item.kind === 'local' ? item.item.id : item.audio.id
+}
+
+function collectionItemKey(
+  kind: CollectionItem['kind'],
+  itemId: string,
+): string {
+  return `${kind}:${itemId}`
+}
+
+function collectionOrderEntry(item: CollectionItem): CollectionOrderEntry {
+  return { kind: item.kind, id: collectionItemId(item) }
+}
+
 function mergeRemoteAudios(
   onlineAudios: RemoteAudio[],
   cachedAudios: RemoteAudio[],
@@ -1356,217 +1526,6 @@ function OfflineNotice() {
     </ThemedView>
   )
 }
-
-type ResumeHeroProps = {
-  item: LoadedAudioItem
-  positionSeconds: number
-  durationSeconds: number | null
-  isResumeDisabled: boolean
-  onResume: () => void
-}
-
-/**
- * Continue-listening hero at the top of the Library: the unfinished episode
- * with the greatest saved position, shown as
- * `title · position of duration · remaining left · [Resume]`. One tap opens
- * the player and resumes from the saved position (the loader seeks there).
- */
-function ResumeHero({
-  item,
-  positionSeconds,
-  durationSeconds,
-  isResumeDisabled,
-  onResume,
-}: ResumeHeroProps) {
-  return (
-    <ResumeHeroView
-      item={item}
-      positionSeconds={positionSeconds}
-      durationSeconds={durationSeconds}
-      isResumeDisabled={isResumeDisabled}
-      onResume={onResume}
-    />
-  )
-}
-
-const ResumeHeroView = memo(function ResumeHeroView({
-  item,
-  positionSeconds,
-  durationSeconds,
-  isResumeDisabled,
-  onResume,
-}: ResumeHeroProps) {
-  const theme = useTheme()
-  const title = getAudioItemTitle(item)
-  const remainingSeconds =
-    durationSeconds === null
-      ? null
-      : Math.max(0, durationSeconds - positionSeconds)
-  const progress =
-    durationSeconds !== null && durationSeconds > 0
-      ? Math.min(Math.max(positionSeconds / durationSeconds, 0), 1)
-      : 0
-  const positionLabel =
-    durationSeconds === null
-      ? formatPlaybackTime(positionSeconds)
-      : `${formatPlaybackTime(positionSeconds)} of ${formatPlaybackTime(durationSeconds)}`
-
-  return (
-    <ThemedView
-      type="backgroundElement"
-      gap={Spacing.three}
-      padding={Spacing.three}
-      borderWidth={1}
-      borderColor="$accent"
-      borderRadius={Radius.large}
-    >
-      <XStack alignItems="center" gap={Spacing.three}>
-        <EpisodeArtwork
-          imageUrl={item.metadata.coverArtUrl}
-          itemId={item.id}
-          name={title}
-          size={56}
-        />
-        <YStack flex={1} minWidth={0} gap={Spacing.half}>
-          <ThemedText type="eyebrow" themeColor="accent">
-            Continue listening
-          </ThemedText>
-          <ThemedText type="episodeTitle" numberOfLines={2}>
-            {title}
-          </ThemedText>
-          <ThemedText
-            type="metadata"
-            themeColor="textSecondary"
-            numberOfLines={1}
-          >
-            {positionLabel}
-            {remainingSeconds !== null
-              ? ` · ${formatPlaybackTime(remainingSeconds)} left`
-              : null}
-          </ThemedText>
-        </YStack>
-      </XStack>
-      <View
-        height={4}
-        borderRadius={4}
-        backgroundColor="$backgroundSelected"
-        accessibilityElementsHidden
-      >
-        <View
-          height="100%"
-          width={`${progress * 100}%`}
-          borderRadius={4}
-          backgroundColor="$accent"
-        />
-      </View>
-      <AppButton
-        accessibilityLabel={`Resume ${title} from ${formatPlaybackTime(positionSeconds)}`}
-        accessibilityHint="Starts playback from where you left off"
-        disabled={isResumeDisabled}
-        onPress={onResume}
-        minHeight={48}
-      >
-        <SymbolView
-          name={RESUME_ICON}
-          size={18}
-          tintColor={theme.accentForeground}
-          weight="bold"
-        />
-        <ThemedText type="smallBold" color="$accentForeground">
-          Resume
-        </ThemedText>
-      </AppButton>
-    </ThemedView>
-  )
-})
-
-/**
- * Recently added (folded in from Discover): the 3 most recent imports with
- * a 44px play affordance. The full collection below stays in queue order;
- * this section surfaces fresh arrivals without leaving Library.
- */
-const RecentlyAdded = memo(function RecentlyAdded({
-  items,
-  activeItemId,
-  isPlaying,
-  onPlay,
-}: {
-  items: LoadedAudioItem[]
-  activeItemId: string | null
-  isPlaying: boolean
-  onPlay: (item: LoadedAudioItem) => void
-}) {
-  const theme = useTheme()
-
-  return (
-    <YStack gap={Spacing.two}>
-      <YStack gap={Spacing.half}>
-        <ThemedText type="heading">Recently added</ThemedText>
-        <ThemedText type="metadata" themeColor="textSecondary">
-          Fresh arrivals in your library.
-        </ThemedText>
-      </YStack>
-      {items.map((item) => {
-        const title = getAudioItemTitle(item)
-        const isActive = activeItemId === item.id
-
-        return (
-          <ThemedView
-            key={item.id}
-            type="backgroundElement"
-            flexDirection="row"
-            alignItems="center"
-            gap={Spacing.two}
-            padding={Spacing.two}
-            borderWidth={1}
-            borderColor="$borderColor"
-            borderRadius={Radius.medium}
-          >
-            <EpisodeArtwork
-              imageUrl={item.metadata.coverArtUrl}
-              itemId={item.id}
-              name={title}
-              size={44}
-            />
-            <YStack flex={1} minWidth={0} gap={2}>
-              <ThemedText type="smallBold" numberOfLines={1}>
-                {title}
-              </ThemedText>
-              <ThemedText
-                type="metadata"
-                themeColor="textSecondary"
-                numberOfLines={1}
-              >
-                {formatEpisodeDate(item.addedAt)}
-                {item.durationSeconds !== null
-                  ? ` · ${formatPlaybackTime(item.durationSeconds)}`
-                  : null}
-              </ThemedText>
-            </YStack>
-            <AppButton
-              tone="icon"
-              accessibilityLabel={
-                isActive && isPlaying
-                  ? `Pause ${title}`
-                  : `Play ${title}`
-              }
-              onPress={() => onPlay(item)}
-              minHeight={44}
-              minWidth={44}
-            >
-              <SymbolView
-                name={isActive && isPlaying ? PAUSE_ICON : PLAY_ICON}
-                size={20}
-                tintColor={theme.text}
-                weight="bold"
-              />
-            </AppButton>
-          </ThemedView>
-        )
-      })}
-    </YStack>
-  )
-})
 
 const StatChip = memo(function StatChip({
   label,
@@ -1675,21 +1634,6 @@ const ADD_ICON: SymbolViewProps['name'] = {
   ios: 'plus',
   android: 'add',
   web: 'add',
-}
-const RESUME_ICON: SymbolViewProps['name'] = {
-  ios: 'play.fill',
-  android: 'play_arrow',
-  web: 'play_arrow',
-}
-const PLAY_ICON: SymbolViewProps['name'] = {
-  ios: 'play.fill',
-  android: 'play_arrow',
-  web: 'play_arrow',
-}
-const PAUSE_ICON: SymbolViewProps['name'] = {
-  ios: 'pause.fill',
-  android: 'pause',
-  web: 'pause',
 }
 const LIBRARY_ICON: SymbolViewProps['name'] = {
   ios: 'headphones',

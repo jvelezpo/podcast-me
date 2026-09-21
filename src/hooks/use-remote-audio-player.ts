@@ -33,6 +33,7 @@ type PendingLoad = {
   requestId: number
   sawUnloadedStatus: boolean
   isStarting: boolean
+  shouldPlay: boolean
   resumePositionSeconds: number
 }
 
@@ -263,7 +264,7 @@ export function useRemoteAudioPlayer(
   )
 
   const loadAndPlay = useCallback(
-    async (audio: RemoteAudio) => {
+    async (audio: RemoteAudio, shouldPlay = true) => {
       const requestId = transitionSequenceRef.current + 1
       transitionSequenceRef.current = requestId
       setIsTransitioning(true)
@@ -330,6 +331,7 @@ export function useRemoteAudioPlayer(
           requestId,
           sawUnloadedStatus: false,
           isStarting: false,
+          shouldPlay,
           resumePositionSeconds,
         }
         pendingLoadRef.current = pendingLoad
@@ -393,6 +395,17 @@ export function useRemoteAudioPlayer(
       status.isLoaded,
       status.playing,
     ],
+  )
+
+  const loadPaused = useCallback(
+    (audio: RemoteAudio): void => {
+      if (isTransitioning) {
+        return
+      }
+
+      void loadAndPlay(audio, false)
+    },
+    [isTransitioning, loadAndPlay],
   )
 
   const pausePlayback = useCallback(
@@ -461,10 +474,16 @@ export function useRemoteAudioPlayer(
           return
         }
 
-        player.play()
-        recordPlayback(pendingLoad.audio, pendingLoad.source)
-        activateLockScreenControls(pendingLoad.audio)
-        internalPauseRef.current = false
+        if (pendingLoad.shouldPlay) {
+          player.play()
+          recordPlayback(pendingLoad.audio, pendingLoad.source)
+          activateLockScreenControls(pendingLoad.audio)
+          internalPauseRef.current = false
+        } else {
+          internalPauseRef.current = true
+          player.pause()
+          player.setActiveForLockScreen(false)
+        }
         pendingLoadRef.current = null
         lastCheckpointRef.current = {
           audioId: pendingLoad.audio.id,
@@ -818,6 +837,7 @@ export function useRemoteAudioPlayer(
       isUsingCachedSource,
       playbackRate,
       playbackError,
+      loadPaused,
       pausePlayback,
       resumePlayback,
       retryPlayback,
@@ -833,6 +853,7 @@ export function useRemoteAudioPlayer(
       activeAudioId,
       isTransitioning,
       isUsingCachedSource,
+      loadPaused,
       pausePlayback,
       playbackError,
       playbackRate,

@@ -30,6 +30,14 @@ export default function AppTabs() {
         />
       </NativeTabs.Trigger>
 
+      <NativeTabs.Trigger name="recent" disableTransparentOnScrollEdge>
+        <NativeTabs.Trigger.Label>Recent</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf={{ default: 'clock', selected: 'clock.fill' }}
+          md={{ default: 'history', selected: 'history' }}
+        />
+      </NativeTabs.Trigger>
+
       <NativeTabs.Trigger name="playlists" disableTransparentOnScrollEdge>
         <NativeTabs.Trigger.Label>Playlists</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon

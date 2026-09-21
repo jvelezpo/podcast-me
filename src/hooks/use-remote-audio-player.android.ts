@@ -38,6 +38,7 @@ import {
   getAndroidAutoPlaybackState,
   observeAndroidAutoPlaybackState,
   pauseAndroidAutoPlayback,
+  prepareAndroidAutoItem,
   playAndroidAutoItem,
   seekAndroidAutoPlayback,
   setAndroidAutoPlaybackRate,
@@ -130,6 +131,7 @@ export function useRemoteAudioPlayer(
   } | null>(null);
 
   const serviceStateRef = useRef(serviceState);
+  const renderedServiceStateRef = useRef(serviceState);
   const activeAudioRef = useRef<RemoteAudio | null>(null);
   /** Audio our own commands addressed; car-initiated adoptions overwrite it. */
   const commandedAudioRef = useRef<RemoteAudio | null>(null);
@@ -342,11 +344,13 @@ export function useRemoteAudioPlayer(
       }
 
       stateRevision += 1;
-      const previous = serviceStateRef.current;
       serviceStateRef.current = nextState;
 
-      // Dedup 500 ms position ticks (audit §P2).
-      if (!isServiceStateEquivalent(previous, nextState)) {
+      // The live ref feeds persistence and event reporting. Dedup against the
+      // last UI state instead, otherwise every 500 ms tick is too small to
+      // render and the displayed position remains frozen.
+      if (!isServiceStateEquivalent(renderedServiceStateRef.current, nextState)) {
+        renderedServiceStateRef.current = nextState;
         setServiceState(nextState);
         setIsTransitioning(false);
       }
@@ -357,10 +361,10 @@ export function useRemoteAudioPlayer(
       const revision = stateRevision;
       void getAndroidAutoPlaybackState().then((nextState) => {
         if (isMounted && revision === stateRevision) {
-          const previous = serviceStateRef.current;
           serviceStateRef.current = nextState;
 
-          if (!isServiceStateEquivalent(previous, nextState)) {
+          if (!isServiceStateEquivalent(renderedServiceStateRef.current, nextState)) {
+            renderedServiceStateRef.current = nextState;
             setServiceState(nextState);
             setIsTransitioning(false);
           }
@@ -414,7 +418,7 @@ export function useRemoteAudioPlayer(
   );
 
   const loadAndPlay = useCallback(
-    async (audio: RemoteAudio) => {
+    async (audio: RemoteAudio, shouldPlay = true) => {
       const requestId = beginTransition();
 
       try {
@@ -481,11 +485,17 @@ export function useRemoteAudioPlayer(
           savedAt: Date.now(),
         };
 
-        const didPlay = await playAndroidAutoItem(
-          toRemoteMediaId(audio.id),
-          resumePositionSeconds,
-          safeRate,
-        );
+        const didPlay = await (shouldPlay
+          ? playAndroidAutoItem(
+              toRemoteMediaId(audio.id),
+              resumePositionSeconds,
+              safeRate,
+            )
+          : prepareAndroidAutoItem(
+              toRemoteMediaId(audio.id),
+              resumePositionSeconds,
+              safeRate,
+            ));
 
         if (!didPlay || requestId !== transitionSequenceRef.current) {
           if (requestId === transitionSequenceRef.current) {
@@ -498,7 +508,9 @@ export function useRemoteAudioPlayer(
           return;
         }
 
-        recordPlayback(audio, source);
+        if (shouldPlay) {
+          recordPlayback(audio, source);
+        }
         finishTransition(requestId);
       } catch {
         failPlayback(
@@ -626,6 +638,17 @@ export function useRemoteAudioPlayer(
       }
     },
     [isTransitioning, loadAndPlay, pausePlayback, resumePlayback],
+  );
+
+  const loadPaused = useCallback(
+    (audio: RemoteAudio): void => {
+      if (isTransitioning) {
+        return;
+      }
+
+      void loadAndPlay(audio, false);
+    },
+    [isTransitioning, loadAndPlay],
   );
 
   /**
@@ -954,6 +977,7 @@ export function useRemoteAudioPlayer(
       isUsingCachedSource,
       playbackRate,
       playbackError,
+      loadPaused,
       pausePlayback,
       resumePlayback,
       retryPlayback,
@@ -971,6 +995,7 @@ export function useRemoteAudioPlayer(
       adoptedPositionSeconds,
       isTransitioning,
       isUsingCachedSource,
+      loadPaused,
       pausePlayback,
       playbackError,
       playbackRate,

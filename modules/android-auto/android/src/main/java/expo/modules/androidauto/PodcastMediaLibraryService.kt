@@ -300,6 +300,29 @@ class PodcastMediaLibraryService : MediaLibraryService() {
     return true
   }
 
+  private fun prepareFromPhone(mediaId: String, positionMs: Long, rate: Float): Boolean {
+    val catalog = AndroidAutoStore.catalog(this)
+    val selectedIndex = catalog.indexOfFirst { it.id == mediaId }
+    if (selectedIndex < 0) return false
+
+    // A paused selection must never inherit `playWhenReady` from the
+    // previously playing row while the replacement source is prepared.
+    player.pause()
+    if (player.currentMediaItem?.mediaId != mediaId) {
+      player.setMediaItems(catalog.map(::playableItem), selectedIndex, positionMs)
+      player.prepare()
+    } else if (player.playbackState == Player.STATE_ENDED) {
+      player.seekTo(0)
+    } else if (player.playbackState == Player.STATE_IDLE) {
+      player.prepare()
+    }
+
+    player.setPlaybackSpeed(rate.coerceIn(0.5f, 2f))
+    player.pause()
+    notifyPlaybackState()
+    return true
+  }
+
   private fun pauseFromPhone(): Boolean {
     if (player.currentMediaItem == null) return false
     persistCurrentPlayback()
@@ -645,6 +668,9 @@ class PodcastMediaLibraryService : MediaLibraryService() {
 
     fun playFromPhone(mediaId: String, positionMs: Long, rate: Float): Boolean =
       activeService?.get()?.playFromPhone(mediaId, positionMs, rate) ?: false
+
+    fun prepareFromPhone(mediaId: String, positionMs: Long, rate: Float): Boolean =
+      activeService?.get()?.prepareFromPhone(mediaId, positionMs, rate) ?: false
 
     fun pauseFromPhone(): Boolean =
       activeService?.get()?.pauseFromPhone() ?: false
