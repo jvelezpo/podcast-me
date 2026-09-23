@@ -1,7 +1,7 @@
 {
   "name": "podcast-me",
   "main": "expo-router/entry",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "expo": {
     "autolinking": {
       "android": {
@@ -55,6 +55,9 @@
   "scripts": {
     "prepare": "node ./scripts/install-git-hooks.js",
     "test:version": "node --test tests/version-hook.test.js",
+    "test:android-auto-build": "node --test tests/android-auto-build.test.js",
+    "verify:android-auto": "node scripts/verify-android-auto.js",
+    "eas-build-on-success": "node scripts/verify-android-auto.js",
     "postinstall": "patch-package --error-on-fail",
     "start": "expo start --tunnel",
     "start:dev": "APP_VARIANT=development expo start --dev-client",
@@ -63,13 +66,13 @@
     "prebuild:dev:ios": "APP_VARIANT=development expo prebuild --clean --platform ios",
     "android:expo": "expo start --android",
     "ios:expo": "expo start --ios",
-    "android:dev": "APP_VARIANT=development expo run:android",
-    "android:dev:all": "npm run prebuild:dev:android && APP_VARIANT=development expo run:android",
+    "android:dev": "npm run prebuild:dev:android && APP_VARIANT=development expo run:android && APP_VARIANT=development node scripts/verify-android-auto.js android/app/build/outputs/apk/debug/app-debug.apk",
+    "android:dev:all": "npm run android:dev",
     "ios:dev": "APP_VARIANT=development expo run:ios",
     "ios:dev:all": "npm run prebuild:dev:ios && APP_VARIANT=development expo run:ios",
     "prebuild:production:android": "APP_VARIANT=production expo prebuild --clean --platform android",
     "prebuild:production:ios": "APP_VARIANT=production expo prebuild --clean --platform ios",
-    "android": "npm run prebuild:production:android && APP_VARIANT=production expo run:android",
+    "android": "npm run prebuild:production:android && APP_VARIANT=production expo run:android && APP_VARIANT=production node scripts/verify-android-auto.js android/app/build/outputs/apk/debug/app-debug.apk",
     "ios": "npm run prebuild:production:ios && APP_VARIANT=production expo run:ios",
     "build:android:production": "eas build --platform android --profile production-apk",
     "build:android:production:local": "source .env && GRADLE_OPTS='-Dorg.gradle.jvmargs=\"-Xmx4096m -XX:MaxMetaspaceSize=1536m -Dfile.encoding=UTF-8\" -Dorg.gradle.workers.max=2' eas build --platform android --profile production-apk --local --output ./dist/podcast-me-production-$(date +%Y%m%d-%H%M%S).apk",

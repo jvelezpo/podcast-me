@@ -120,6 +120,12 @@ cd android
 ./gradlew :android-auto:connectedDebugAndroidTest
 ```
 
+Every EAS Android build now checks the finished build for Android Auto discovery metadata and
+fails if its browsable media service or `media` descriptor is missing. Local `npm run android`
+and `npm run android:dev` do the same for their APKs. To check a manually built APK, run
+`APP_VARIANT=development npm run verify:android-auto -- path/to/app.apk` (use
+`APP_VARIANT=production` for the production package).
+
 The connected tests cover both Media3 and the platform MediaBrowser interface used by Android
 Auto. They verify manifest discovery and the media descriptor, browse recordings and start
 playback without opening a phone activity, and exercise resume position, pause, seek, and the
