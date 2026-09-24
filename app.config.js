@@ -1,5 +1,11 @@
 const { version } = require('./package.json');
 
+const [major, minor, patch] = version
+  .split('-')[0]
+  .split('.')
+  .map(Number);
+const androidVersionCode = major * 1_000_000 + minor * 1_000 + patch;
+
 const appVariant = process.env.APP_VARIANT ?? 'production';
 
 if (appVariant !== 'development' && appVariant !== 'production') {
@@ -26,6 +32,7 @@ module.exports = ({ config: productionConfig }) => ({
   },
   android: {
     ...productionConfig.android,
+    versionCode: androidVersionCode,
     package: isDevelopment
       ? 'com.podcastme.app.dev'
       : productionConfig.android.package,
