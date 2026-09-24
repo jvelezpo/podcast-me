@@ -1,7 +1,7 @@
 {
   "name": "podcast-me",
   "main": "expo-router/entry",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "expo": {
     "autolinking": {
       "android": {
@@ -77,7 +77,9 @@
     "build:android:production": "eas build --platform android --profile production-apk",
     "build:android:production:local": "source .env && GRADLE_OPTS='-Dorg.gradle.jvmargs=\"-Xmx4096m -XX:MaxMetaspaceSize=1536m -Dfile.encoding=UTF-8\" -Dorg.gradle.workers.max=2' eas build --platform android --profile production-apk --local --output ./dist/podcast-me-production-$(date +%Y%m%d-%H%M%S).apk",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "build:playstore": "eas build --platform android --profile production --local --output ./build-production.aab",
+    "submit:playstore": "eas submit --platform android --path ./build-production.aab"
   },
   "private": true
 }
