@@ -85,10 +85,15 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-For a real car, enable Android Auto developer mode and **Unknown sources** in Android Auto's
-developer settings so it can list a locally installed APK. This also applies to signed production
-APKs built with EAS; a production build is still sideloaded when installed directly. This is an
-Android Auto setting, separate from Android's permission to install APKs.
+For reliable real-car testing, install Podcast Me from a Google Play internal testing release.
+Build the store bundle with `eas build --platform android --profile production`, upload the
+resulting `.aab` to the Play Console internal testing track, and install it from the tester link.
+Android Auto requires a trusted install source for real vehicles unless its separate **Unknown
+sources** developer option is enabled. A signed production APK installed directly is still a
+sideloaded app and cannot be made permanently visible in the car launcher by app code.
+
+For local APK testing, enable Android Auto developer mode and **Unknown sources** in Android Auto's
+developer settings. This is separate from Android's permission to install APKs.
 
 If the app disappears from the car launcher or Android Auto says **opened on phone**:
 
