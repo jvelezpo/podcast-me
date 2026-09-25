@@ -21,6 +21,7 @@
       }
     },
     "production": {
+      "environment": "production",
       "env": {
         "APP_VARIANT": "production"
       }

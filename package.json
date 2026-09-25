@@ -1,7 +1,7 @@
 {
   "name": "podcast-me",
   "main": "expo-router/entry",
-  "version": "1.0.25",
+  "version": "1.0.26",
   "expo": {
     "autolinking": {
       "android": {
@@ -18,6 +18,7 @@
     "expo": "~57.0.20",
     "expo-asset": "~57.0.16",
     "expo-audio": "57.0.4",
+    "expo-build-properties": "~57.0.22",
     "expo-constants": "~57.0.17",
     "expo-dev-client": "~57.0.18",
     "expo-device": "~57.0.1",
