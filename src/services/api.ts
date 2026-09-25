@@ -12,6 +12,7 @@ export type Session = {
   expiresAt: string
   refreshExpiresAt: string
   user: AuthUser
+  apiOrigin?: string
 }
 
 export type Profile = {
@@ -110,6 +111,29 @@ export class ApiError extends Error {
     super(message)
     this.status = status
   }
+}
+
+let configuredApiOrigin: string | null = null
+
+export function getDefaultApiOrigin(): string {
+  return process.env.EXPO_PUBLIC_API_ORIGIN?.replace(/\/+$/, '') ?? ''
+}
+
+export function configureApiOrigin(apiOrigin: string): string {
+  let url: URL
+
+  try {
+    url = new URL(apiOrigin.trim())
+  } catch {
+    throw new ApiError('Enter a valid server URL.')
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new ApiError('Your server URL must use HTTP or HTTPS.')
+  }
+
+  configuredApiOrigin = url.origin
+  return configuredApiOrigin
 }
 
 export async function requestSignInCode(email: string): Promise<void> {
@@ -327,7 +351,7 @@ async function request<T>(
 }
 
 function getApiOrigin(): string {
-  const apiOrigin = process.env.EXPO_PUBLIC_API_ORIGIN
+  const apiOrigin = configuredApiOrigin ?? getDefaultApiOrigin()
   // const apiOrigin = 'http://192.168.40.172:3000'
 
   if (typeof apiOrigin !== 'string' || !apiOrigin) {

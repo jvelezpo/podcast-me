@@ -13,6 +13,7 @@ import {
   ApiError,
   type AuthUser,
   buildRemoteAudioStreamSource,
+  configureApiOrigin,
   getProfile,
   getPlaybackProgress,
   listRemoteAudios,
@@ -63,8 +64,8 @@ type AuthContextValue = {
   user: AuthUser | null
   libraryTotal: number | null
   profileError: string | null
-  requestCode: (email: string) => Promise<void>
-  verifyCode: (email: string, code: string) => Promise<void>
+  requestCode: (email: string, apiOrigin: string) => Promise<void>
+  verifyCode: (email: string, code: string, apiOrigin: string) => Promise<void>
   loadRemoteAudios: (forceRefresh?: boolean) => Promise<RemoteAudio[]>
   getRemoteAudioStreamSource: (
     audio: RemoteAudio,
@@ -237,6 +238,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
         const storedSession = await loadSession()
 
         if (storedSession) {
+          if (storedSession.apiOrigin) {
+            configureApiOrigin(storedSession.apiOrigin)
+          }
           setSession(storedSession)
           await refreshProfileForSession(storedSession)
         }
@@ -246,16 +250,18 @@ export function AuthProvider({ children }: PropsWithChildren) {
     })()
   }, [refreshProfileForSession])
 
-  const requestCode = useCallback(async (email: string) => {
+  const requestCode = useCallback(async (email: string, apiOrigin: string) => {
+    configureApiOrigin(apiOrigin)
     await requestSignInCode(email.trim().toLowerCase())
   }, [])
 
   const verifyCode = useCallback(
-    async (email: string, code: string) => {
-      const nextSession = await verifySignInCode(
-        email.trim().toLowerCase(),
-        code.trim(),
-      )
+    async (email: string, code: string, apiOrigin: string) => {
+      const normalizedApiOrigin = configureApiOrigin(apiOrigin)
+      const nextSession = {
+        ...(await verifySignInCode(email.trim().toLowerCase(), code.trim())),
+        apiOrigin: normalizedApiOrigin,
+      }
 
       await saveSession(nextSession)
       setSession(nextSession)
@@ -657,7 +663,14 @@ async function rotateSession(session: Session): Promise<Session> {
     throw new ApiError('Your saved session has expired. Please sign in again.', 401)
   }
 
-  const nextSession = await refreshSession(session.refreshToken)
+  if (session.apiOrigin) {
+    configureApiOrigin(session.apiOrigin)
+  }
+
+  const nextSession = {
+    ...(await refreshSession(session.refreshToken)),
+    apiOrigin: session.apiOrigin,
+  }
   await saveSession(nextSession)
   return nextSession
 }

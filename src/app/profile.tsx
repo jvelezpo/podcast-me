@@ -4,12 +4,22 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   StyleSheet,
   TextInput,
+  View as NativeView,
 } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { ScrollView, Spinner, View, XStack, YStack, useMedia } from 'tamagui'
+import {
+  ScrollView,
+  Spinner,
+  View,
+  XStack,
+  YStack,
+  useMedia,
+} from 'tamagui'
 
 import { ThemedText } from '@/components/themed-text'
 import { ThemedView } from '@/components/themed-view'
@@ -21,13 +31,17 @@ import {
   Radius,
   Spacing,
 } from '@/constants/theme'
-import { useLibraryData, usePlaybackState } from '@/contexts/audio-library-context'
+import {
+  useLibraryData,
+  usePlaybackState,
+} from '@/contexts/audio-library-context'
 import { useAuth } from '@/contexts/auth-context'
 import {
   type ThemePreference,
   useThemePreference,
 } from '@/contexts/theme-preference-context'
 import { useTheme } from '@/hooks/use-theme'
+import { configureApiOrigin, getDefaultApiOrigin } from '@/services/api'
 import {
   clearRemoteAudioFileCache,
   loadCachedRemoteAudios,
@@ -69,126 +83,129 @@ export default function ProfileScreen() {
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{
-            width: '100%',
-            maxWidth: MaxContentWidth,
-            alignSelf: 'center',
-            gap: Spacing.four,
-            paddingHorizontal: media.wide ? Spacing.five : Spacing.three,
-            paddingTop: media.short ? Spacing.three : Spacing.four,
-            paddingBottom:
-              (hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four,
+              width: '100%',
+              maxWidth: MaxContentWidth,
+              alignSelf: 'center',
+              gap: Spacing.four,
+              paddingHorizontal: media.wide ? Spacing.five : Spacing.three,
+              paddingTop: media.short ? Spacing.three : Spacing.four,
+              paddingBottom:
+                (hasPlayer ? BottomPlayerInset : BottomTabInset) + Spacing.four,
             }}
           >
-          <YStack gap={Spacing.one}>
-            <ThemedText type="eyebrow" themeColor="accent">
-              Your listening
-            </ThemedText>
-            <ThemedText
-              type="title"
-              $compact={{ fontSize: 36, lineHeight: 42 }}
-            >
-              Profile
-            </ThemedText>
-            <ThemedText themeColor="textSecondary">
-              Playback preferences and an at-a-glance view of your local
-              collection.
-            </ThemedText>
-          </YStack>
+            <YStack gap={Spacing.one}>
+              <ThemedText type="eyebrow" themeColor="accent">
+                Your listening
+              </ThemedText>
+              <ThemedText
+                type="title"
+                $compact={{ fontSize: 36, lineHeight: 42 }}
+              >
+                Profile
+              </ThemedText>
+              <ThemedText themeColor="textSecondary">
+                Playback preferences and an at-a-glance view of your local
+                collection.
+              </ThemedText>
+            </YStack>
 
-          <OfflineBanner />
+            <OfflineBanner />
 
-          <AccountCard />
+            <AccountCard />
 
-          <XStack flexWrap="wrap" gap={Spacing.three}>
-            <StatCard
-              icon={DOWNLOAD_ICON}
-              label="Downloads"
-              value={`${library.items.filter((item) => item.isAvailable).length}`}
-              tintColor={theme.success}
-            />
-            <StatCard
-              icon={QUEUE_ICON}
-              label="In queue"
-              value={`${library.items.length}`}
-              tintColor={theme.accent}
-            />
-            <StatCard
-              icon={TIME_ICON}
-              label="Resume time"
-              value={formatPlaybackTime(listenedSeconds)}
-              tintColor={theme.warning}
-            />
-          </XStack>
-
-          <SectionCard title="Appearance" subtitle="Dark mode is the default.">
-            <XStack gap={Spacing.two} $compact={{ flexDirection: 'column' }}>
-              <ThemeChoice
-                label="Dark"
-                value="dark"
-                selected={preference === 'dark'}
-                onSelect={setPreference}
+            <XStack flexWrap="wrap" gap={Spacing.three}>
+              <StatCard
+                icon={DOWNLOAD_ICON}
+                label="Downloads"
+                value={`${library.items.filter((item) => item.isAvailable).length}`}
+                tintColor={theme.success}
               />
-              <ThemeChoice
-                label="Light"
-                value="light"
-                selected={preference === 'light'}
-                onSelect={setPreference}
+              <StatCard
+                icon={QUEUE_ICON}
+                label="In queue"
+                value={`${library.items.length}`}
+                tintColor={theme.accent}
               />
-              <ThemeChoice
-                label="System"
-                value="system"
-                selected={preference === 'system'}
-                onSelect={setPreference}
+              <StatCard
+                icon={TIME_ICON}
+                label="Resume time"
+                value={formatPlaybackTime(listenedSeconds)}
+                tintColor={theme.warning}
               />
             </XStack>
-          </SectionCard>
 
-          <SectionCard
-            title="Playback"
-            subtitle="Media controls stay predictable wherever you listen."
-          >
-            <SettingsRow
-              icon={BACKGROUND_ICON}
-              title="Background playback"
-              description="Continues while the app is minimized or the phone is locked."
-              tintColor={theme.accent}
-            />
-            <SettingsDivider />
-            <SettingsRow
-              icon={BLUETOOTH_ICON}
-              title="Bluetooth recovery"
-              description="Pauses safely during route changes, then resumes automatically."
-              tintColor={theme.accent}
-            />
-            <SettingsDivider />
-            <SettingsRow
-              icon={SPEED_ICON}
-              title="Playback speed"
-              description={`${playback.playbackRate}× · Change it from Now Playing.`}
-              tintColor={theme.accent}
-            />
-          </SectionCard>
+            <SectionCard
+              title="Appearance"
+              subtitle="Dark mode is the default."
+            >
+              <XStack gap={Spacing.two} $compact={{ flexDirection: 'column' }}>
+                <ThemeChoice
+                  label="Dark"
+                  value="dark"
+                  selected={preference === 'dark'}
+                  onSelect={setPreference}
+                />
+                <ThemeChoice
+                  label="Light"
+                  value="light"
+                  selected={preference === 'light'}
+                  onSelect={setPreference}
+                />
+                <ThemeChoice
+                  label="System"
+                  value="system"
+                  selected={preference === 'system'}
+                  onSelect={setPreference}
+                />
+              </XStack>
+            </SectionCard>
 
-          <SectionCard
-            title="Storage & privacy"
-            subtitle="Your audio is yours, and stays that way."
-          >
-            <SettingsRow
-              icon={LOCK_ICON}
-              title="On-device only"
-              description="Audio, ordering, and resume progress stay in app-owned local storage."
-              tintColor={theme.success}
-            />
-            <SettingsDivider />
-            <DownloadManager />
-          </SectionCard>
-          <ThemedText
-            type="metadata"
-            themeColor="textSecondary"
-            textAlign="center"
-          >
-            Podcast Me · Version {version}
-          </ThemedText>
+            <SectionCard
+              title="Playback"
+              subtitle="Media controls stay predictable wherever you listen."
+            >
+              <SettingsRow
+                icon={BACKGROUND_ICON}
+                title="Background playback"
+                description="Continues while the app is minimized or the phone is locked."
+                tintColor={theme.accent}
+              />
+              <SettingsDivider />
+              <SettingsRow
+                icon={BLUETOOTH_ICON}
+                title="Bluetooth recovery"
+                description="Pauses safely during route changes, then resumes automatically."
+                tintColor={theme.accent}
+              />
+              <SettingsDivider />
+              <SettingsRow
+                icon={SPEED_ICON}
+                title="Playback speed"
+                description={`${playback.playbackRate}× · Change it from Now Playing.`}
+                tintColor={theme.accent}
+              />
+            </SectionCard>
+
+            <SectionCard
+              title="Storage & privacy"
+              subtitle="Your audio is yours, and stays that way."
+            >
+              <SettingsRow
+                icon={LOCK_ICON}
+                title="On-device only"
+                description="Audio, ordering, and resume progress stay in app-owned local storage."
+                tintColor={theme.success}
+              />
+              <SettingsDivider />
+              <DownloadManager />
+            </SectionCard>
+            <ThemedText
+              type="metadata"
+              themeColor="textSecondary"
+              textAlign="center"
+            >
+              Podcast Me · Version {version}
+            </ThemedText>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
@@ -208,8 +225,14 @@ function AccountCard() {
     verifyCode,
   } = useAuth()
   const theme = useTheme()
+  const [connectionStep, setConnectionStep] = useState<
+    'intro' | 'server' | 'auth'
+  >('intro')
+  const [serverUrl, setServerUrl] = useState(getDefaultApiOrigin)
+  const [authMethod, setAuthMethod] = useState<'otp' | 'password'>('otp')
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
+  const [password, setPassword] = useState('')
   const [codeRequested, setCodeRequested] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
@@ -219,7 +242,7 @@ function AccountCard() {
     setMessage(null)
 
     try {
-      await requestCode(email)
+      await requestCode(email, serverUrl)
       setCodeRequested(true)
       setMessage('Check your inbox for the 6-digit sign-in code.')
     } catch (error) {
@@ -234,7 +257,7 @@ function AccountCard() {
     setMessage(null)
 
     try {
-      await verifyCode(email, code)
+      await verifyCode(email, code, serverUrl)
       setCode('')
       setCodeRequested(false)
     } catch (error) {
@@ -259,7 +282,10 @@ function AccountCard() {
 
   if (isRestoring) {
     return (
-      <SectionCard title="Account" subtitle="Restoring your account.">
+      <SectionCard
+        title="Bring your own audio"
+        subtitle="Restoring your connection."
+      >
         <XStack alignItems="center" gap={Spacing.two}>
           <ActivityIndicator color={theme.accent} />
           <ThemedText themeColor="textSecondary">
@@ -273,8 +299,8 @@ function AccountCard() {
   if (user) {
     return (
       <SectionCard
-        title="Account"
-        subtitle="Signed in with a secure email session."
+        title="Bring your own audio"
+        subtitle="Connected to your audio server with a secure email session."
       >
         <YStack gap={Spacing.one}>
           <ThemedText type="smallBold">{user.email}</ThemedText>
@@ -311,11 +337,119 @@ function AccountCard() {
     )
   }
 
+  if (connectionStep === 'intro') {
+    return (
+      <SectionCard
+        title="Bring your own audio"
+        subtitle="Connect a server to keep your audio library available wherever you listen."
+      >
+        <AppButton onPress={() => setConnectionStep('server')}>
+          <ThemedText color="white" type="smallBold">
+            Start
+          </ThemedText>
+        </AppButton>
+      </SectionCard>
+    )
+  }
+
+  if (connectionStep === 'server') {
+    return (
+      <SectionCard
+        title="Add your server"
+        subtitle="Use the address for the server that stores your audio library."
+      >
+        <YStack gap={Spacing.two}>
+          <TextInput
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            placeholder="https://audio.example.com"
+            placeholderTextColor={theme.textSecondary}
+            style={[
+              styles.input,
+              {
+                backgroundColor: theme.background,
+                borderColor: theme.borderColor,
+                color: theme.text,
+              },
+            ]}
+            value={serverUrl}
+            onChangeText={(value) => {
+              setServerUrl(value)
+              setMessage(null)
+            }}
+          />
+          {message ? (
+            <ThemedText type="metadata" color="$danger">
+              {message}
+            </ThemedText>
+          ) : null}
+          <XStack gap={Spacing.two} flexWrap="wrap">
+            <AppButton
+              tone="outlined"
+              onPress={() => setConnectionStep('intro')}
+            >
+              <ThemedText type="smallBold">Back</ThemedText>
+            </AppButton>
+            <AppButton
+              disabled={!serverUrl.trim()}
+              onPress={() => {
+                try {
+                  setServerUrl(configureApiOrigin(serverUrl))
+                  setMessage(null)
+                  setConnectionStep('auth')
+                } catch (error) {
+                  setMessage(toErrorMessage(error))
+                }
+              }}
+            >
+              <ThemedText color="white" type="smallBold">
+                Continue
+              </ThemedText>
+            </AppButton>
+          </XStack>
+        </YStack>
+      </SectionCard>
+    )
+  }
+
   return (
     <SectionCard
-      title="Account"
-      subtitle="Sign in to keep your account library connected. Podcast Me stays free to use."
+      title="Choose how to sign in"
+      subtitle={`Connect to ${serverUrl}.`}
     >
+      <YStack gap={Spacing.two}>
+        <YStack gap={Spacing.one} accessibilityRole="radiogroup">
+          <AppButton
+            tone={authMethod === 'otp' ? 'secondary' : 'outlined'}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: authMethod === 'otp' }}
+            onPress={() => {
+              setAuthMethod('otp')
+              setMessage(null)
+            }}
+          >
+            <ThemedText type="smallBold">
+              {authMethod === 'otp' ? '◉' : '○'} One-time code
+            </ThemedText>
+          </AppButton>
+          <YStack position="relative" width="100%">
+            <AppButton width="100%" tone="outlined" disabled accessibilityRole="radio">
+              <ThemedText type="smallBold">○ Password</ThemedText>
+            </AppButton>
+            <ComingSoonTooltip label="Password sign-in" />
+          </YStack>
+          <YStack position="relative" width="100%">
+            <AppButton width="100%" tone="outlined" disabled accessibilityRole="radio">
+              <ThemedText type="smallBold">○ OAuth</ThemedText>
+            </AppButton>
+            <ComingSoonTooltip label="OAuth sign-in" />
+          </YStack>
+        </YStack>
+        <AppButton tone="ghost" onPress={() => setConnectionStep('server')}>
+          <ThemedText type="smallBold">Change server</ThemedText>
+        </AppButton>
+      </YStack>
       <YStack gap={Spacing.two}>
         <TextInput
           autoCapitalize="none"
@@ -339,7 +473,24 @@ function AccountCard() {
             setMessage(null)
           }}
         />
-        {codeRequested ? (
+        {authMethod === 'password' ? (
+          <TextInput
+            autoComplete="current-password"
+            placeholder="Password"
+            placeholderTextColor={theme.textSecondary}
+            secureTextEntry
+            style={[
+              styles.input,
+              {
+                backgroundColor: theme.background,
+                borderColor: theme.borderColor,
+                color: theme.text,
+              },
+            ]}
+            value={password}
+            onChangeText={setPassword}
+          />
+        ) : codeRequested ? (
           <TextInput
             autoComplete="one-time-code"
             keyboardType="number-pad"
@@ -366,21 +517,81 @@ function AccountCard() {
       ) : null}
       <AppButton
         disabled={
-          isSubmitting || !email.trim() || (codeRequested && code.length !== 6)
+          authMethod === 'password' ||
+          isSubmitting ||
+          !email.trim() ||
+          (codeRequested && code.length !== 6)
         }
         onPress={() => {
-          void (codeRequested ? submitVerification() : submitRequest())
+          if (authMethod === 'otp') {
+            void (codeRequested ? submitVerification() : submitRequest())
+          }
         }}
       >
         <ThemedText color="white" type="smallBold">
-          {isSubmitting
-            ? 'Please wait…'
-            : codeRequested
-              ? 'Verify code'
-              : 'Email me a code'}
+          {authMethod === 'password'
+            ? 'Password sign-in coming soon'
+            : isSubmitting
+              ? 'Please wait…'
+              : codeRequested
+                ? 'Verify code'
+                : 'Email me a code'}
         </ThemedText>
       </AppButton>
     </SectionCard>
+  )
+}
+
+function ComingSoonTooltip({ label }: { label: string }) {
+  const theme = useTheme()
+  const [isVisible, setIsVisible] = useState(false)
+  const [tooltipTop, setTooltipTop] = useState(0)
+
+  return (
+    <>
+      <AppButton
+        tone="icon"
+        position="absolute"
+        right={Spacing.one}
+        top={0}
+        accessibilityLabel={`${label} availability`}
+        accessibilityHint="Shows when this sign-in method will be available"
+        onPress={(event) => {
+          setTooltipTop(event.nativeEvent.pageY + Spacing.four)
+          setIsVisible(true)
+        }}
+      >
+        <ThemedText type="smallBold">?</ThemedText>
+      </AppButton>
+      <Modal
+        transparent
+        visible={isVisible}
+        animationType="fade"
+        onRequestClose={() => setIsVisible(false)}
+      >
+        <NativeView style={styles.tooltipOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            accessibilityRole="button"
+            accessibilityLabel="Close availability message"
+            onPress={() => setIsVisible(false)}
+          />
+          <Pressable
+            style={[
+              styles.tooltip,
+              {
+                top: tooltipTop,
+                backgroundColor: theme.background,
+                borderColor: theme.borderColor,
+              },
+            ]}
+            onPress={() => undefined}
+          >
+            <ThemedText type="metadata">Coming soon</ThemedText>
+          </Pressable>
+        </NativeView>
+      </Modal>
+    </>
   )
 }
 
@@ -518,11 +729,7 @@ const DownloadManager = memo(function DownloadManager() {
           borderRadius={14}
           backgroundColor="$backgroundSelected"
         >
-          <SymbolView
-            name={OFFLINE_ICON}
-            size={21}
-            tintColor={theme.success}
-          />
+          <SymbolView name={OFFLINE_ICON} size={21} tintColor={theme.success} />
         </View>
         <YStack flex={1} gap={Spacing.half}>
           <ThemedText type="smallBold">Available offline</ThemedText>
@@ -808,6 +1015,15 @@ const OFFLINE_ICON: SymbolViewProps['name'] = {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
+  tooltipOverlay: { flex: 1 },
+  tooltip: {
+    position: 'absolute',
+    right: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.one,
+    borderRadius: Radius.small,
+    borderWidth: 1,
+  },
   input: {
     minHeight: 48,
     borderWidth: 1,
