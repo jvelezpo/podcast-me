@@ -13,6 +13,7 @@ import {
   PanResponder,
   type LayoutChangeEvent,
   type PanResponderGestureState,
+  useWindowDimensions,
 } from 'react-native'
 import { Spinner, View, XStack, YStack, useMedia } from 'tamagui'
 
@@ -129,6 +130,8 @@ export function GlobalPlayer() {
   })
   const swipeOffset = useRef(new Animated.Value(0)).current
   const media = useMedia()
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const isLandscape = windowWidth > windowHeight
   const theme = useTheme()
   const reduceMotion = useReducedMotion()
   const reduceMotionRef = useRef(reduceMotion)
@@ -627,7 +630,13 @@ export function GlobalPlayer() {
   const activeProgress = activeDuration
     ? Math.min(playback.currentPositionSeconds / activeDuration, 1)
     : 0
-  const artworkSize = media.short ? 220 : media.compact ? 276 : 340
+  const artworkSize = isLandscape
+    ? 160
+    : media.short
+      ? 220
+      : media.compact
+        ? 276
+        : 340
   const itemTitle = getAudioItemTitle(item)
   const itemMetadataSummary = [
     item.metadata.artist,
@@ -970,9 +979,13 @@ export function GlobalPlayer() {
           maxWidth={640}
           flex={1}
           alignItems="center"
-          gap={media.short ? Spacing.three : Spacing.four}
-          paddingHorizontal={Spacing.four}
-          paddingTop={media.short ? Spacing.one : Spacing.three}
+          gap={
+            isLandscape ? Spacing.two : media.short ? Spacing.three : Spacing.four
+          }
+          paddingHorizontal={isLandscape ? Spacing.three : Spacing.four}
+          paddingTop={
+            isLandscape ? Spacing.two : media.short ? Spacing.one : Spacing.three
+          }
         >
           <SwipeableArtwork
             itemTitle={itemTitle}
@@ -1101,6 +1114,8 @@ function RemotePlayerSurface({
   onClearSleep,
 }: RemotePlayerSurfaceProps) {
   const media = useMedia()
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions()
+  const isLandscape = windowWidth > windowHeight
   const theme = useTheme()
   const wasPlayingBeforeScrubRef = useRef(false)
   const [isSpeedOpen, setIsSpeedOpen] = useState(false)
@@ -1125,7 +1140,13 @@ function RemotePlayerSurface({
     setRemoteRetryToken((token) => token + 1)
     remotePlayback.retryPlayback()
   }
-  const artworkSize = media.short ? 220 : media.compact ? 276 : 340
+  const artworkSize = isLandscape
+    ? 160
+    : media.short
+      ? 220
+      : media.compact
+        ? 276
+        : 340
   const imageUrl = getRemoteAudioCoverArtUrl(audio.metadata)
   const error =
     remotePlayback.playbackError?.audioId === audio.id
@@ -1474,9 +1495,13 @@ function RemotePlayerSurface({
           maxWidth={640}
           flex={1}
           alignItems="center"
-          gap={media.short ? Spacing.three : Spacing.four}
-          paddingHorizontal={Spacing.four}
-          paddingTop={media.short ? Spacing.one : Spacing.three}
+          gap={
+            isLandscape ? Spacing.two : media.short ? Spacing.three : Spacing.four
+          }
+          paddingHorizontal={isLandscape ? Spacing.three : Spacing.four}
+          paddingTop={
+            isLandscape ? Spacing.two : media.short ? Spacing.one : Spacing.three
+          }
         >
           <SwipeableArtwork
             itemTitle={audio.title}

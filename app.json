@@ -2,7 +2,7 @@
   "expo": {
     "name": "Podcast Me",
     "slug": "podcast-me",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/podcast-me-icon.png",
     "scheme": "podcastme",
     "userInterfaceStyle": "automatic",

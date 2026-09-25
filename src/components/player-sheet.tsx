@@ -51,7 +51,9 @@ export function PlayerSheet({
   footer,
   collapseLabel = 'Collapse player',
 }: PlayerSheetProps) {
-  const { height: windowHeight } = useWindowDimensions()
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions()
+  const isLandscape = windowWidth > windowHeight
+  const footerWidth = Math.min(Math.max(windowWidth * 0.4, 300), 420)
   const [mounted, setMounted] = useState(visible)
   const reduceMotion = useReducedMotion()
   const reduceMotionRef = useRef(reduceMotion)
@@ -202,24 +204,27 @@ export function PlayerSheet({
       <Animated.View
         style={{
           position: 'absolute',
+          top: isLandscape ? 0 : undefined,
           right: 0,
           bottom: 0,
           left: 0,
-          // Definite height (not just maxHeight): the column inside is
+          // Definite height (not just maxHeight): the layout inside is
           // header + ScrollView flex:1 + sticky footer. With an indefinite
           // height the scroll body sizes to its content and pushes the
           // footer — slider + transport — below the visible area where it
           // can neither be seen nor scrubbed. A fixed height lets the body
           // shrink and scroll internally while the footer stays pinned.
-          height: Math.max(windowHeight - Spacing.three, 320),
+          height: isLandscape
+            ? windowHeight
+            : Math.max(windowHeight - Spacing.three, 320),
           transform: [{ translateY: Animated.add(translateY, dragY) }],
         }}
       >
         <ThemedView
           flex={1}
           overflow="hidden"
-          borderTopLeftRadius={Radius.large}
-          borderTopRightRadius={Radius.large}
+          borderTopLeftRadius={isLandscape ? 0 : Radius.large}
+          borderTopRightRadius={isLandscape ? 0 : Radius.large}
           borderWidth={1}
           borderColor="$borderColor"
           boxShadow="0 -12px 40px rgba(0,0,0,0.35)"
@@ -228,51 +233,57 @@ export function PlayerSheet({
             style={{ flex: 1 }}
             edges={['top', 'bottom', 'left', 'right']}
           >
-            <View
-              {...headerResponder.panHandlers}
-              accessible
-              accessibilityHint="Drag down to collapse the player"
-            >
-              <View
-                alignItems="center"
-                paddingTop={Spacing.two}
-                paddingBottom={Spacing.one}
-                accessibilityElementsHidden
-                importantForAccessibility="no"
-              >
+            <View flex={1} flexDirection={isLandscape ? 'row' : 'column'}>
+              <View flex={1} minWidth={0}>
                 <View
-                  width={40}
-                  height={4}
-                  borderRadius={4}
-                  backgroundColor="$backgroundSelected"
-                />
+                  {...headerResponder.panHandlers}
+                  accessible
+                  accessibilityHint="Drag down to collapse the player"
+                >
+                  <View
+                    alignItems="center"
+                    paddingTop={Spacing.two}
+                    paddingBottom={Spacing.one}
+                    accessibilityElementsHidden
+                    importantForAccessibility="no"
+                  >
+                    <View
+                      width={40}
+                      height={4}
+                      borderRadius={4}
+                      backgroundColor="$backgroundSelected"
+                    />
+                  </View>
+                  {header}
+                </View>
+
+                <ScrollView
+                  flex={1}
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={{
+                    alignItems: 'center',
+                    paddingBottom: Spacing.three,
+                  }}
+                >
+                  {children}
+                </ScrollView>
               </View>
-              {header}
+
+              <ThemedView
+                type="backgroundElement"
+                borderTopWidth={isLandscape ? 0 : 1}
+                borderLeftWidth={isLandscape ? 1 : 0}
+                borderColor="$borderColor"
+                width={isLandscape ? footerWidth : '100%'}
+                paddingHorizontal={isLandscape ? Spacing.three : Spacing.four}
+                paddingTop={Spacing.two}
+                // Extra breathing room above the gesture bar so the slider
+                // and transport sit comfortably in thumb reach.
+                paddingBottom={Spacing.three}
+              >
+                {footer}
+              </ThemedView>
             </View>
-
-            <ScrollView
-              flex={1}
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={{
-                alignItems: 'center',
-                paddingBottom: Spacing.three,
-              }}
-            >
-              {children}
-            </ScrollView>
-
-            <ThemedView
-              type="backgroundElement"
-              borderTopWidth={1}
-              borderColor="$borderColor"
-              paddingHorizontal={Spacing.four}
-              paddingTop={Spacing.two}
-              // Extra breathing room above the gesture bar so the slider
-              // and transport sit comfortably in thumb reach.
-              paddingBottom={Spacing.three}
-            >
-              {footer}
-            </ThemedView>
           </SafeAreaView>
         </ThemedView>
       </Animated.View>
